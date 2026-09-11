@@ -13,6 +13,8 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
     private static final String DB_NAME = "flibrary.db";
     private static final int DB_VERSION = 1;
     private static final char FIELD_SEPARATOR = '\u001f';
+    private static final String BOOK_COLUMNS =
+            "id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id, folder ";
 
     public CatalogDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -86,27 +88,27 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
     }
 
     public List<BookItem> listBooks(int limit) {
-        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+        String sql = "SELECT " + BOOK_COLUMNS +
                 "FROM books ORDER BY title COLLATE NOCASE LIMIT ?";
         return queryBooks(sql, new String[]{Integer.toString(limit)});
     }
 
     public List<BookItem> searchBooks(String query, int limit) {
         String needle = "%" + query.trim() + "%";
-        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+        String sql = "SELECT " + BOOK_COLUMNS +
                 "FROM books WHERE title LIKE ? COLLATE NOCASE OR author LIKE ? COLLATE NOCASE OR series LIKE ? COLLATE NOCASE " +
                 "ORDER BY title COLLATE NOCASE LIMIT ?";
         return queryBooks(sql, new String[]{needle, needle, needle, Integer.toString(limit)});
     }
 
     public List<BookItem> booksByAuthor(String author, int limit) {
-        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+        String sql = "SELECT " + BOOK_COLUMNS +
                 "FROM books WHERE author = ? COLLATE NOCASE ORDER BY title COLLATE NOCASE LIMIT ?";
         return queryBooks(sql, new String[]{author, Integer.toString(limit)});
     }
 
     public List<BookItem> booksBySeries(String series, int limit) {
-        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+        String sql = "SELECT " + BOOK_COLUMNS +
                 "FROM books WHERE series = ? COLLATE NOCASE ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE LIMIT ?";
         return queryBooks(sql, new String[]{series, Integer.toString(limit)});
     }
@@ -139,7 +141,7 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
                 result.add(new BookItem(
                         cursor.getLong(0), cursor.getString(1), cursor.getString(2), cursor.getString(3),
                         cursor.getString(4), cursor.getString(5), cursor.getString(6), cursor.getString(7),
-                        cursor.getString(8), cursor.getString(9), cursor.getString(10)));
+                        cursor.getString(8), cursor.getString(9), cursor.getString(10), cursor.getString(11)));
             }
         }
         return result;
