@@ -5,15 +5,15 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
-import android.view.Gravity;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.core.content.FileProvider;
@@ -48,86 +48,44 @@ public final class MainActivity extends Activity {
     private CatalogDatabase catalogDatabase;
     private BookItem pendingBook;
     private Button importButton;
-    private final ExecutorService importExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
         catalogDatabase = new CatalogDatabase(this);
 
-        int padding = dp(16);
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(padding, padding, padding, padding);
+        status = findViewById(R.id.status);
+        searchInput = findViewById(R.id.search_input);
+        results = findViewById(R.id.results);
+        importButton = findViewById(R.id.import_button);
 
-        TextView title = new TextView(this);
-        title.setText("FLibrary Android");
-        title.setTextSize(27);
-        title.setGravity(Gravity.CENTER);
-        content.addView(title);
+        Button folderButton = findViewById(R.id.folder_button);
+        Button booksButton = findViewById(R.id.books_button);
+        Button authorsButton = findViewById(R.id.authors_button);
+        Button seriesButton = findViewById(R.id.series_button);
+        Button searchButton = findViewById(R.id.search_button);
 
-        status = new TextView(this);
-        updateStatus();
-        status.setTextSize(14);
-        status.setPadding(0, dp(8), 0, dp(8));
-        content.addView(status);
-
-        LinearLayout setup = new LinearLayout(this);
-        setup.setOrientation(LinearLayout.HORIZONTAL);
-
-        importButton = new Button(this);
-        importButton.setText("Import INPX");
         importButton.setOnClickListener(v -> openInpxDocument());
-        setup.addView(importButton, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        Button folderButton = new Button(this);
-        folderButton.setText("Library folder");
         folderButton.setOnClickListener(v -> chooseLibraryFolder());
-        setup.addView(folderButton, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        content.addView(setup);
+        booksButton.setOnClickListener(v ->
+                showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги"));
+        authorsButton.setOnClickListener(v ->
+                showNameList(catalogDatabase.listAuthors(LIST_LIMIT), true));
+        seriesButton.setOnClickListener(v ->
+                showNameList(catalogDatabase.listSeries(LIST_LIMIT), false));
+        searchButton.setOnClickListener(v -> runSearch());
+        searchInput.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
+                runSearch();
+                return true;
+            }
+            return false;
+        });
 
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button books = new Button(this);
-        books.setText("Books");
-        books.setOnClickListener(v -> showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books"));
-        navigation.addView(books, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        Button authors = new Button(this);
-        authors.setText("Authors");
-        authors.setOnClickListener(v -> showNameList(catalogDatabase.listAuthors(LIST_LIMIT), true));
-        navigation.addView(authors, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        Button series = new Button(this);
-        series.setText("Series");
-        series.setOnClickListener(v -> showNameList(catalogDatabase.listSeries(LIST_LIMIT), false));
-        navigation.addView(series, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
-        content.addView(navigation);
-
-        searchInput = new EditText(this);
-        searchInput.setHint("Title, author or series");
-        searchInput.setSingleLine(true);
-        content.addView(searchInput);
-
-        Button search = new Button(this);
-        search.setText("Search");
-        search.setOnClickListener(v -> runSearch());
-        content.addView(search);
-
-        results = new LinearLayout(this);
-        results.setOrientation(LinearLayout.VERTICAL);
-        results.setPadding(0, dp(8), 0, 0);
-        content.addView(results);
-
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.addView(content);
-        setContentView(scrollView);
-
-        showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
+        updateStatus();
+        showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
     }
 
     private int dp(int value) {
@@ -135,8 +93,8 @@ public final class MainActivity extends Activity {
     }
 
     private void updateStatus() {
-        status.setText("Books: " + catalogDatabase.getBookCount() +
-                " • Library folder: " + (getLibraryTreeUri() == null ? "not selected" : "ready"));
+        status.setText("Книг: " + catalogDatabase.getBookCount() +
+                "  •  Папка: " + (getLibraryTreeUri() == null ? "не вибрана" : "готова"));
     }
 
     private void openInpxDocument() {
@@ -181,7 +139,7 @@ public final class MainActivity extends Activity {
         if (requestCode != OPEN_INPX_REQUEST) return;
         Uri uri = data.getData();
         if (uri == null) {
-            status.setText("No document selected");
+            status.setText("Документ не вибрано");
             return;
         }
 
@@ -191,38 +149,37 @@ public final class MainActivity extends Activity {
             getContentResolver().takePersistableUriPermission(uri, flags);
         } catch (SecurityException ignored) {
         }
-
         startInpxImport(uri, queryDisplayName(uri));
     }
 
     private void startInpxImport(Uri uri, String displayName) {
         importButton.setEnabled(false);
-        status.setText("Importing " + displayName + "…");
+        status.setText("Імпортую " + displayName + "…");
 
-        importExecutor.execute(() -> {
+        worker.execute(() -> {
             boolean transactionStarted = false;
             boolean success = false;
             String message;
 
             try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
                 if (pfd == null) {
-                    message = "Cannot open selected document";
+                    message = "Не вдалося відкрити вибраний INPX";
                 } else {
                     catalogDatabase.beginNativeImport();
                     transactionStarted = true;
                     String result = nativeImportInpx(pfd.getFd(), catalogDatabase);
                     success = result != null && result.startsWith("OK:");
-                    message = result == null ? "Native import failed" : result;
+                    message = result == null ? "Помилка нативного імпорту" : result;
                 }
             } catch (IOException | RuntimeException e) {
-                message = "Import failed: " + e.getMessage();
+                message = "Помилка імпорту: " + safeMessage(e);
             }
 
             if (transactionStarted) {
                 try {
                     catalogDatabase.finishNativeImport(success);
                 } catch (RuntimeException e) {
-                    message = "Database finalize failed: " + e.getMessage();
+                    message = "Помилка завершення бази: " + safeMessage(e);
                     success = false;
                 }
             }
@@ -234,9 +191,10 @@ public final class MainActivity extends Activity {
                 importButton.setEnabled(true);
                 if (importSucceeded) {
                     updateStatus();
-                    showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
+                    showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
                 } else {
                     status.setText(finalMessage);
+                    showErrorDialog(finalMessage);
                 }
             });
         });
@@ -245,48 +203,59 @@ public final class MainActivity extends Activity {
     private void runSearch() {
         String query = searchInput.getText().toString().trim();
         if (query.isEmpty()) {
-            showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
+            showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
             return;
         }
-        showBooks(catalogDatabase.searchBooks(query, LIST_LIMIT), "Search: " + query);
+        showBooks(catalogDatabase.searchBooks(query, LIST_LIMIT), "Пошук: " + query);
     }
 
     private void showBooks(List<BookItem> books, String heading) {
         results.removeAllViews();
-        addHeading(heading + " • " + books.size());
+        addHeading(heading + "  •  " + books.size());
         for (BookItem book : books) {
             TextView row = new TextView(this);
-            row.setText(book.title + (book.subtitle().isEmpty() ? "" : "\n" + book.subtitle()));
+            String subtitle = book.subtitle();
+            row.setText(book.title + (subtitle.isEmpty() ? "" : "\n" + subtitle));
             row.setTextSize(16);
-            row.setPadding(dp(10), dp(10), dp(10), dp(10));
-            row.setBackgroundResource(android.R.drawable.list_selector_background);
+            row.setTextColor(getColor(R.color.text_primary));
+            row.setLineSpacing(0, 1.08f);
+            row.setPadding(dp(14), dp(12), dp(14), dp(12));
+            row.setBackgroundResource(R.drawable.bg_book_row);
             row.setOnClickListener(v -> showBookDetails(book));
-            results.addView(row, new LinearLayout.LayoutParams(
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT));
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            params.bottomMargin = dp(8);
+            results.addView(row, params);
         }
-        if (books.isEmpty()) addEmpty("No books found");
+        if (books.isEmpty()) addEmpty("Нічого не знайдено");
     }
 
     private void showNameList(List<String> names, boolean authors) {
         results.removeAllViews();
-        addHeading((authors ? "Authors" : "Series") + " • " + names.size());
+        addHeading((authors ? "Автори" : "Серії") + "  •  " + names.size());
         for (String display : names) {
             String name = stripCount(display);
             TextView row = new TextView(this);
             row.setText(display);
             row.setTextSize(17);
-            row.setPadding(dp(10), dp(12), dp(10), dp(12));
-            row.setBackgroundResource(android.R.drawable.list_selector_background);
+            row.setTextColor(getColor(R.color.text_primary));
+            row.setPadding(dp(14), dp(13), dp(14), dp(13));
+            row.setBackgroundResource(R.drawable.bg_book_row);
             row.setOnClickListener(v -> {
                 List<BookItem> books = authors
                         ? catalogDatabase.booksByAuthor(name, LIST_LIMIT)
                         : catalogDatabase.booksBySeries(name, LIST_LIMIT);
                 showBooks(books, name);
             });
-            results.addView(row);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            params.bottomMargin = dp(8);
+            results.addView(row, params);
         }
-        if (names.isEmpty()) addEmpty(authors ? "No authors" : "No series");
+        if (names.isEmpty()) addEmpty(authors ? "Авторів не знайдено" : "Серій не знайдено");
     }
 
     private String stripCount(String display) {
@@ -298,7 +267,9 @@ public final class MainActivity extends Activity {
         TextView heading = new TextView(this);
         heading.setText(text);
         heading.setTextSize(20);
-        heading.setPadding(0, dp(8), 0, dp(8));
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        heading.setTextColor(getColor(R.color.text_primary));
+        heading.setPadding(dp(2), dp(10), dp(2), dp(12));
         results.addView(heading);
     }
 
@@ -306,7 +277,8 @@ public final class MainActivity extends Activity {
         TextView empty = new TextView(this);
         empty.setText(text);
         empty.setTextSize(15);
-        empty.setPadding(0, dp(12), 0, dp(12));
+        empty.setTextColor(getColor(R.color.text_secondary));
+        empty.setPadding(dp(4), dp(16), dp(4), dp(16));
         results.addView(empty);
     }
 
@@ -314,16 +286,16 @@ public final class MainActivity extends Activity {
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(book.title)
                 .setMessage(book.details())
-                .setPositiveButton("Open", (dialog, which) -> openBook(book));
+                .setPositiveButton("Відкрити", (dialog, which) -> openBook(book));
         if (!book.author.isEmpty()) {
-            builder.setNeutralButton("Author", (dialog, which) ->
+            builder.setNeutralButton("Автор", (dialog, which) ->
                     showBooks(catalogDatabase.booksByAuthor(book.author, LIST_LIMIT), book.author));
         }
         if (!book.series.isEmpty()) {
-            builder.setNegativeButton("Series", (dialog, which) ->
+            builder.setNegativeButton("Серія", (dialog, which) ->
                     showBooks(catalogDatabase.booksBySeries(book.series, LIST_LIMIT), book.series));
         } else {
-            builder.setNegativeButton("Close", null);
+            builder.setNegativeButton("Закрити", null);
         }
         builder.show();
     }
@@ -404,52 +376,70 @@ public final class MainActivity extends Activity {
             return;
         }
         if (book.folder.isEmpty() || book.fileName.isEmpty()) {
-            showError("Catalog record does not contain archive/file information.");
+            showError("У записі каталогу немає даних про архів або файл книги.");
             return;
         }
 
-        DocumentFile archive = findArchive(book);
-        if (archive == null) {
-            showError("Archive not found: " + book.folder +
-                    "\nSelect the library root or the folder that contains FLibrary archives.");
-            return;
-        }
+        status.setText("Відкриваю «" + book.title + "»…");
+        worker.execute(() -> openBookInBackground(book));
+    }
 
-        status.setText("Opening " + book.title + "…");
-        try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(archive.getUri(), "r")) {
-            if (pfd == null) {
-                showError("Cannot open archive: " + book.folder);
-                return;
-            }
-            byte[] data = nativeExtractBook(pfd.getFd(), book.fileName, book.extension);
-            if (data == null || data.length == 0) {
-                showError("Book file was not found in archive: " + book.fileName);
+    private void openBookInBackground(BookItem book) {
+        try {
+            DocumentFile archive = findArchive(book);
+            if (archive == null) {
+                postError("Архів не знайдено: " + book.folder +
+                        "\nВибери корінь бібліотеки або папку з архівами FLibrary.");
                 return;
             }
 
-            File booksDir = new File(getCacheDir(), "books");
-            if (!booksDir.exists() && !booksDir.mkdirs()) {
-                showError("Cannot create book cache folder.");
-                return;
-            }
-            File output = new File(booksDir, safeFileName(book.outputFileName()));
-            try (FileOutputStream stream = new FileOutputStream(output, false)) {
-                stream.write(data);
+            File output;
+            try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(archive.getUri(), "r")) {
+                if (pfd == null) {
+                    postError("Не вдалося відкрити архів: " + book.folder);
+                    return;
+                }
+                byte[] data = nativeExtractBook(pfd.getFd(), book.fileName, book.extension);
+                if (data == null || data.length == 0) {
+                    postError("Файл книги не знайдено в архіві: " + book.fileName);
+                    return;
+                }
+
+                File booksDir = new File(getCacheDir(), "books");
+                if (!booksDir.exists() && !booksDir.mkdirs()) {
+                    postError("Не вдалося створити кеш для книг.");
+                    return;
+                }
+                output = new File(booksDir, safeFileName(book.outputFileName()));
+                try (FileOutputStream stream = new FileOutputStream(output, false)) {
+                    stream.write(data);
+                }
             }
 
             Uri contentUri = FileProvider.getUriForFile(
                     this, getPackageName() + ".files", output);
-            Intent view = new Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(contentUri, mimeType(book.extension))
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(view, "Open book"));
-            updateStatus();
-        } catch (ActivityNotFoundException e) {
-            showError("No application is installed that can open " +
-                    book.extension.toUpperCase(Locale.ROOT) + " files.");
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                Intent view = new Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(contentUri, mimeType(book.extension))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try {
+                    startActivity(Intent.createChooser(view, "Відкрити книгу"));
+                    updateStatus();
+                } catch (ActivityNotFoundException e) {
+                    showError("Немає застосунку для відкриття ." +
+                            book.extension.toLowerCase(Locale.ROOT));
+                }
+            });
         } catch (IOException | RuntimeException e) {
-            showError("Open failed: " + e.getMessage());
+            postError("Помилка відкриття: " + safeMessage(e));
         }
+    }
+
+    private void postError(String message) {
+        runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed()) showError(message);
+        });
     }
 
     private String safeFileName(String value) {
@@ -471,6 +461,10 @@ public final class MainActivity extends Activity {
 
     private void showError(String message) {
         status.setText(message);
+        showErrorDialog(message);
+    }
+
+    private void showErrorDialog(String message) {
         new AlertDialog.Builder(this)
                 .setTitle("FLibrary")
                 .setMessage(message)
@@ -478,10 +472,14 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
+    private String safeMessage(Throwable error) {
+        String message = error.getMessage();
+        return message == null || message.isEmpty() ? error.getClass().getSimpleName() : message;
+    }
+
     private String queryDisplayName(Uri uri) {
         try (Cursor cursor = getContentResolver().query(
-                uri,
-                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
                 if (index >= 0) {
@@ -495,7 +493,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        importExecutor.shutdownNow();
+        worker.shutdownNow();
         if (catalogDatabase != null) catalogDatabase.close();
         super.onDestroy();
     }
