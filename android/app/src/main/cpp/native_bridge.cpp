@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "InpxConstant.h"
+#include "inpx_book_record.h"
 
 namespace {
 constexpr std::uint32_t ZIP_LOCAL_FILE_SIGNATURE = 0x04034b50;
@@ -23,7 +24,6 @@ constexpr std::size_t ZIP_LOCAL_HEADER_SIZE = 30;
 constexpr std::size_t MAX_DISPLAY_ENTRIES = 20;
 constexpr std::size_t MAX_BOOK_PREVIEW = 8;
 constexpr std::size_t MAX_INP_UNCOMPRESSED = 64 * 1024 * 1024;
-constexpr char INP_FIELD_SEPARATOR = '\x04';
 
 std::uint16_t ReadLe16(const std::uint8_t* p) {
     return static_cast<std::uint16_t>(p[0]) |
@@ -58,6 +58,7 @@ std::string BuildStatus() {
     status += " | INP extension: ";
     status += INP_EXT;
     status += "\nZIP deflate support: zlib";
+    status += "\nTyped INPX book model: 17 fields";
     return status;
 }
 
@@ -250,26 +251,13 @@ bool ExtractEntry(int fd, const ZipEntry& entry, std::string& output, std::strin
     return true;
 }
 
-std::vector<std::string_view> SplitFields(std::string_view line) {
-    std::vector<std::string_view> fields;
-    std::size_t start = 0;
-    while (start <= line.size()) {
-        const auto end = line.find(INP_FIELD_SEPARATOR, start);
-        fields.push_back(line.substr(start, end == std::string_view::npos ? line.size() - start : end - start));
-        if (end == std::string_view::npos) {
-            break;
-        }
-        start = end + 1;
-    }
-    return fields;
-}
-
 std::string PreviewBooks(std::string_view inp) {
     std::string result;
     std::size_t cursor = 0;
     std::size_t shown = 0;
+    std::size_t parsed = 0;
 
-    while (cursor < inp.size() && shown < MAX_BOOK_PREVIEW) {
+    while (cursor < inp.size()) {
         auto lineEnd = inp.find('\n', cursor);
         if (lineEnd == std::string_view::npos) {
             lineEnd = inp.size();
@@ -279,25 +267,25 @@ std::string PreviewBooks(std::string_view inp) {
             line.remove_suffix(1);
         }
 
-        const auto fields = SplitFields(line);
-        if (fields.size() >= 3) {
-            const auto author = fields[0];
-            const auto title = fields[2];
-            if (!title.empty()) {
+        flibrary::android::BookRecord book;
+        if (flibrary::android::ParseBookRecord(line, book)) {
+            ++parsed;
+            if (shown < MAX_BOOK_PREVIEW) {
                 result += "\n• ";
-                result.append(title.data(), title.size());
-                if (!author.empty()) {
-                    result += " — ";
-                    result.append(author.data(), author.size());
-                }
+                result += flibrary::android::BookSummary(book);
                 ++shown;
             }
         }
         cursor = lineEnd + 1;
     }
 
-    if (shown == 0) {
+    if (parsed == 0) {
         return "\nNo recognizable book records found in the first INP file";
+    }
+
+    result += "\n\nParsed records in this INP: " + std::to_string(parsed);
+    if (parsed > shown) {
+        result += "\nPreview shows first " + std::to_string(shown) + " books";
     }
     return result;
 }
