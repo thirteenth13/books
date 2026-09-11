@@ -7,6 +7,12 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class MainActivity extends Activity {
+    static {
+        System.loadLibrary("flibrary_android");
+    }
+
+    private native String nativeStatus();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -23,7 +29,7 @@ public final class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER);
 
         TextView status = new TextView(this);
-        status.setText("Android shell is running.\nNext: connect the FLibrary INPX core through JNI.");
+        status.setText(nativeStatus());
         status.setTextSize(16);
         status.setGravity(Gravity.CENTER);
         status.setPadding(0, padding, 0, 0);
