@@ -26,6 +26,8 @@ constexpr std::size_t MAX_DISPLAY_ENTRIES = 20;
 constexpr std::size_t MAX_BOOK_PREVIEW = 8;
 constexpr std::size_t MAX_INP_UNCOMPRESSED = 64 * 1024 * 1024;
 constexpr std::size_t MAX_CATALOG_BOOKS = 2'000'000;
+constexpr std::size_t IMPORT_BATCH_SIZE = 500;
+constexpr char SQLITE_FIELD_SEPARATOR = '\x1f';
 
 std::uint16_t ReadLe16(const std::uint8_t* p) {
     return static_cast<std::uint16_t>(p[0]) |
@@ -60,6 +62,7 @@ std::string BuildStatus() {
     status += "\nZIP deflate support: zlib";
     status += "\nTyped INPX book model: 17 fields";
     status += "\nFull multi-INP catalog scan enabled";
+    status += "\nSQLite batch import bridge enabled";
     return status;
 }
 
@@ -214,7 +217,6 @@ void ParseInp(std::string_view inp, CatalogSummary& catalog) {
         if (lineEnd == std::string_view::npos) lineEnd = inp.size();
         auto line = inp.substr(cursor, lineEnd - cursor);
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-
         flibrary::android::BookRecord book;
         if (flibrary::android::ParseBookRecord(line, book)) {
             ++catalog.books;
@@ -255,9 +257,7 @@ std::string CatalogText(const CatalogSummary& catalog) {
     result += "\nSeries: " + std::to_string(catalog.series.size());
     result += "\nLanguages: " + std::to_string(catalog.languages.size());
     result += "\n\nBooks preview:";
-    for (const auto& book : catalog.preview) {
-        result += "\n• " + flibrary::android::BookSummary(book);
-    }
+    for (const auto& book : catalog.preview) result += "\n• " + flibrary::android::BookSummary(book);
     if (catalog.preview.empty()) result += "\nNo recognizable book records found";
     if (!catalog.errors.empty()) {
         result += "\n\nWarnings:";
@@ -265,6 +265,84 @@ std::string CatalogText(const CatalogSummary& catalog) {
     }
     if (catalog.books >= MAX_CATALOG_BOOKS) result += "\nCatalog safety limit reached";
     return result;
+}
+
+std::string EncodeBookRow(const flibrary::android::BookRecord& b) {
+    const std::array<const std::string*, 17> fields = {
+        &b.author, &b.genre, &b.title, &b.series, &b.seriesNumber, &b.file, &b.size,
+        &b.libraryId, &b.deleted, &b.extension, &b.date, &b.folder, &b.language,
+        &b.libraryRate, &b.keywords, &b.year, &b.sourceLibrary
+    };
+    std::string row;
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (i) row += SQLITE_FIELD_SEPARATOR;
+        row += *fields[i];
+    }
+    return row;
+}
+
+bool FlushImportBatch(JNIEnv* env, jobject database, jmethodID insertMethod, std::vector<std::string>& batch) {
+    if (batch.empty()) return true;
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass == nullptr) return false;
+    jobjectArray array = env->NewObjectArray(static_cast<jsize>(batch.size()), stringClass, nullptr);
+    if (array == nullptr) return false;
+    for (jsize i = 0; i < static_cast<jsize>(batch.size()); ++i) {
+        jstring value = env->NewStringUTF(batch[static_cast<std::size_t>(i)].c_str());
+        if (value == nullptr) { env->DeleteLocalRef(array); return false; }
+        env->SetObjectArrayElement(array, i, value);
+        env->DeleteLocalRef(value);
+    }
+    env->CallVoidMethod(database, insertMethod, array);
+    env->DeleteLocalRef(array);
+    batch.clear();
+    return !env->ExceptionCheck();
+}
+
+std::string ImportCatalogToDatabase(JNIEnv* env, int fd, jobject database) {
+    const auto index = ReadZipIndex(fd);
+    if (!index.ok) return "ERROR: " + index.error;
+
+    jclass dbClass = env->GetObjectClass(database);
+    if (dbClass == nullptr) return "ERROR: cannot access CatalogDatabase";
+    jmethodID insertMethod = env->GetMethodID(dbClass, "insertNativeBatch", "([Ljava/lang/String;)V");
+    if (insertMethod == nullptr) return "ERROR: CatalogDatabase.insertNativeBatch is missing";
+
+    std::vector<std::string> batch;
+    batch.reserve(IMPORT_BATCH_SIZE);
+    std::size_t imported = 0;
+    std::size_t inpParsed = 0;
+    std::size_t inpFailed = 0;
+
+    for (const auto& entry : index.entries) {
+        if (!EndsWithIgnoreCase(entry.name, INP_EXT)) continue;
+        std::string inp;
+        std::string error;
+        if (!ExtractEntry(fd, entry, inp, error)) { ++inpFailed; continue; }
+        ++inpParsed;
+
+        std::size_t cursor = 0;
+        while (cursor < inp.size() && imported < MAX_CATALOG_BOOKS) {
+            auto lineEnd = inp.find('\n', cursor);
+            if (lineEnd == std::string::npos) lineEnd = inp.size();
+            std::string_view line(inp.data() + cursor, lineEnd - cursor);
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            flibrary::android::BookRecord book;
+            if (flibrary::android::ParseBookRecord(line, book)) {
+                batch.push_back(EncodeBookRow(book));
+                ++imported;
+                if (batch.size() >= IMPORT_BATCH_SIZE && !FlushImportBatch(env, database, insertMethod, batch)) {
+                    return "ERROR: SQLite batch insert failed";
+                }
+            }
+            cursor = lineEnd + 1;
+        }
+        if (imported >= MAX_CATALOG_BOOKS) break;
+    }
+
+    if (!FlushImportBatch(env, database, insertMethod, batch)) return "ERROR: SQLite final batch insert failed";
+    return "OK: imported " + std::to_string(imported) + " books from " + std::to_string(inpParsed) + " INP files" +
+           (inpFailed ? " (failed INP: " + std::to_string(inpFailed) + ")" : "");
 }
 
 std::string JStringToUtf8(JNIEnv* env, jstring value) {
@@ -303,7 +381,14 @@ Java_ua_flibrary_android_MainActivity_nativeProbeInpx(JNIEnv* env, jobject, jint
     const auto displayCount = std::min<std::size_t>(index.entries.size(), MAX_DISPLAY_ENTRIES);
     for (std::size_t i = 0; i < displayCount; ++i) output += "\n• " + index.entries[i].name;
     if (index.entries.size() > displayCount) output += "\n… +" + std::to_string(index.entries.size() - displayCount) + " more";
-
     if (inpCount > 0) output += CatalogText(ParseCatalog(fd, index));
     return env->NewStringUTF(output.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_ua_flibrary_android_MainActivity_nativeImportInpx(JNIEnv* env, jobject, jint fd, jobject database) {
+    if (database == nullptr) return env->NewStringUTF("ERROR: database is null");
+    const auto result = ImportCatalogToDatabase(env, fd, database);
+    if (env->ExceptionCheck()) return nullptr;
+    return env->NewStringUTF(result.c_str());
 }
