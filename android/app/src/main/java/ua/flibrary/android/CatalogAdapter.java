@@ -13,13 +13,8 @@ import java.util.Collections;
 import java.util.List;
 
 final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder> {
-    interface BookClickListener {
-        void onBookClick(BookItem book);
-    }
-
-    interface NameClickListener {
-        void onNameClick(String name);
-    }
+    interface BookClickListener { void onBookClick(BookItem book); }
+    interface NameClickListener { void onNameClick(String name); }
 
     private enum Mode { BOOKS, NAMES, EMPTY }
 
@@ -48,12 +43,37 @@ final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder
         notifyDataSetChanged();
     }
 
+    void appendBooks(List<BookItem> value) {
+        if (value.isEmpty()) return;
+        if (mode != Mode.BOOKS) {
+            showBooks(value);
+            return;
+        }
+        int start = books.size();
+        books.addAll(value);
+        notifyItemRangeInserted(start, value.size());
+    }
+
     void showNames(List<String> value, String empty) {
         mode = value.isEmpty() ? Mode.EMPTY : Mode.NAMES;
         names = new ArrayList<>(value);
         books = Collections.emptyList();
         emptyText = empty;
         notifyDataSetChanged();
+    }
+
+    void appendNames(List<String> value) {
+        if (value.isEmpty()) return;
+        if (mode != Mode.NAMES) return;
+        int start = names.size();
+        names.addAll(value);
+        notifyItemRangeInserted(start, value.size());
+    }
+
+    int dataSize() {
+        if (mode == Mode.BOOKS) return books.size();
+        if (mode == Mode.NAMES) return names.size();
+        return 0;
     }
 
     @Override
@@ -91,6 +111,8 @@ final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder
         TextView row = holder.row;
         row.setTypeface(Typeface.DEFAULT, Typeface.NORMAL);
         row.setTextColor(activity.getColor(R.color.text_primary));
+        row.setTextSize(16);
+        row.setBackgroundResource(R.drawable.bg_book_row);
         row.setOnClickListener(null);
 
         if (mode == Mode.BOOKS) {
