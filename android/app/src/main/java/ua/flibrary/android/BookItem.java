@@ -12,10 +12,11 @@ public final class BookItem {
     public final String language;
     public final String year;
     public final String libraryId;
+    public final String folder;
 
     public BookItem(long id, String author, String genre, String title, String series,
                     String seriesNumber, String fileName, String extension,
-                    String language, String year, String libraryId) {
+                    String language, String year, String libraryId, String folder) {
         this.id = id;
         this.author = value(author);
         this.genre = value(genre);
@@ -27,6 +28,7 @@ public final class BookItem {
         this.language = value(language);
         this.year = value(year);
         this.libraryId = value(libraryId);
+        this.folder = value(folder);
     }
 
     private static String value(String text) {
@@ -59,8 +61,17 @@ public final class BookItem {
         if (!language.isEmpty()) text.append("\nLanguage: ").append(language);
         if (!year.isEmpty()) text.append("\nYear: ").append(year);
         if (!extension.isEmpty()) text.append("\nFormat: ").append(extension);
+        if (!folder.isEmpty()) text.append("\nArchive: ").append(folder);
         if (!fileName.isEmpty()) text.append("\nFile: ").append(fileName);
         if (!libraryId.isEmpty()) text.append("\nLibrary ID: ").append(libraryId);
         return text.toString();
+    }
+
+    public String outputFileName() {
+        if (fileName.isEmpty()) return "book" + (extension.isEmpty() ? "" : "." + extension);
+        if (extension.isEmpty() || fileName.toLowerCase().endsWith("." + extension.toLowerCase())) {
+            return fileName;
+        }
+        return fileName + "." + extension;
     }
 }
