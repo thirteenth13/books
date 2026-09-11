@@ -33,7 +33,7 @@ final class BookDetailsPage {
 
         Button back = new Button(activity);
         back.setText("← Назад");
-        back.setTextAllCaps(false);
+        back.setAllCaps(false);
         back.setMinWidth(0);
         back.setOnClickListener(v -> dialog.dismiss());
         LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(
@@ -105,7 +105,7 @@ final class BookDetailsPage {
 
         Button open = new Button(activity);
         open.setText("Відкрити книгу");
-        open.setTextAllCaps(false);
+        open.setAllCaps(false);
         open.setTextSize(17);
         open.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams openParams = fullWidth();
@@ -136,7 +136,7 @@ final class BookDetailsPage {
     private static Button actionButton(MainActivity activity, String label) {
         Button button = new Button(activity);
         button.setText(label);
-        button.setTextAllCaps(false);
+        button.setAllCaps(false);
         button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         button.setMinWidth(0);
         return button;
