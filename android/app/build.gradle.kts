@@ -5,6 +5,7 @@ plugins {
 android {
     namespace = "ua.flibrary.android"
     compileSdk = 35
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "ua.flibrary.android"
@@ -19,7 +20,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += listOf("-std=c++20")
+                cppFlags += listOf("-std=c++23")
             }
         }
     }
@@ -27,6 +28,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
