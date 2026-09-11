@@ -1,8 +1,8 @@
 package ua.flibrary.android;
 
 import android.app.Activity;
-import android.app.ActivityNotFoundException;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
