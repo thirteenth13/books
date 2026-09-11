@@ -1,6 +1,7 @@
 package ua.flibrary.android;
 
 import android.graphics.Typeface;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -18,7 +19,6 @@ import java.util.Locale;
 final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder> {
     interface BookClickListener { void onBookClick(BookItem book); }
     interface NameClickListener { void onNameClick(String name); }
-
     private enum Mode { BOOKS, NAMES, EMPTY }
 
     private final MainActivity activity;
@@ -29,197 +29,47 @@ final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder
     private List<String> names = Collections.emptyList();
     private String emptyText = "Нічого не знайдено";
 
-    CatalogAdapter(MainActivity activity,
-                   BookClickListener bookClickListener,
-                   NameClickListener nameClickListener) {
-        this.activity = activity;
-        this.bookClickListener = bookClickListener;
-        this.nameClickListener = nameClickListener;
-        setHasStableIds(true);
+    CatalogAdapter(MainActivity activity, BookClickListener bookClickListener, NameClickListener nameClickListener) {
+        this.activity = activity; this.bookClickListener = bookClickListener; this.nameClickListener = nameClickListener; setHasStableIds(true);
+    }
+    void showBooks(List<BookItem> value){mode=value.isEmpty()?Mode.EMPTY:Mode.BOOKS;books=new ArrayList<>(value);names=Collections.emptyList();emptyText="Нічого не знайдено";notifyDataSetChanged();}
+    void appendBooks(List<BookItem> value){if(value.isEmpty())return;if(mode!=Mode.BOOKS){showBooks(value);return;}int start=books.size();books.addAll(value);notifyItemRangeInserted(start,value.size());}
+    void showNames(List<String> value,String empty){mode=value.isEmpty()?Mode.EMPTY:Mode.NAMES;names=new ArrayList<>(value);books=Collections.emptyList();emptyText=empty;notifyDataSetChanged();}
+    void appendNames(List<String> value){if(value.isEmpty()||mode!=Mode.NAMES)return;int start=names.size();names.addAll(value);notifyItemRangeInserted(start,value.size());}
+    int dataSize(){return mode==Mode.BOOKS?books.size():mode==Mode.NAMES?names.size():0;}
+    @Override public long getItemId(int p){return mode==Mode.BOOKS?books.get(p).id:mode==Mode.NAMES?names.get(p).hashCode():Long.MIN_VALUE;}
+    @Override public int getItemCount(){return mode==Mode.BOOKS?books.size():mode==Mode.NAMES?names.size():1;}
+
+    @NonNull @Override public RowHolder onCreateViewHolder(@NonNull ViewGroup parent,int viewType){
+        LinearLayout card=new LinearLayout(parent.getContext());card.setOrientation(LinearLayout.VERTICAL);card.setGravity(Gravity.CENTER_VERTICAL);card.setPadding(activity.dp(12),activity.dp(7),activity.dp(12),activity.dp(7));card.setBackgroundResource(R.drawable.bg_book_row);
+        RecyclerView.LayoutParams params=new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);params.bottomMargin=activity.dp(5);card.setLayoutParams(params);
+        TextView title=textView(15,R.color.text_primary);title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);title.setMaxLines(2);title.setEllipsize(TextUtils.TruncateAt.END);card.addView(title,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView author=textView(13,R.color.text_secondary);author.setMaxLines(1);author.setEllipsize(TextUtils.TruncateAt.END);LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);ap.topMargin=activity.dp(1);card.addView(author,ap);
+        LinearLayout meta=new LinearLayout(parent.getContext());meta.setOrientation(LinearLayout.HORIZONTAL);meta.setGravity(Gravity.CENTER_VERTICAL);LinearLayout.LayoutParams mp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);mp.topMargin=activity.dp(2);card.addView(meta,mp);
+        TextView series=textView(11.5f,R.color.text_secondary);series.setMaxLines(1);series.setEllipsize(TextUtils.TruncateAt.END);meta.addView(series,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1));
+        TextView badges=textView(10.5f,R.color.primary);badges.setTypeface(Typeface.DEFAULT,Typeface.BOLD);badges.setGravity(Gravity.END);meta.addView(badges,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,ViewGroup.LayoutParams.WRAP_CONTENT));
+        return new RowHolder(card,title,author,series,badges);
+    }
+    private TextView textView(float size,int color){TextView v=new TextView(activity);v.setTextSize(size);v.setTextColor(activity.getColor(color));v.setIncludeFontPadding(false);return v;}
+
+    @Override public void onBindViewHolder(@NonNull RowHolder h,int p){
+        h.itemView.setOnClickListener(null);h.title.setTextColor(activity.getColor(R.color.text_primary));h.author.setTextColor(activity.getColor(R.color.text_secondary));h.series.setTextColor(activity.getColor(R.color.text_secondary));h.badges.setTextColor(activity.getColor(R.color.primary));h.itemView.setBackgroundResource(R.drawable.bg_book_row);h.title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);h.title.setTextSize(15);
+        if(mode==Mode.BOOKS){BookItem b=books.get(p);h.title.setText(b.title);h.author.setText(b.author.isEmpty()?"Невідомий автор":humanizeAuthor(b.author));h.author.setVisibility(View.VISIBLE);
+            StringBuilder s=new StringBuilder();if(!b.series.isEmpty()){s.append(b.series);if(!b.seriesNumber.isEmpty())s.append(" · #").append(b.seriesNumber);}else if(!b.genre.isEmpty())s.append(humanizeGenre(b.genre));h.series.setText(s);h.series.setVisibility(s.length()==0?View.GONE:View.VISIBLE);
+            StringBuilder badges=new StringBuilder();if(!b.extension.isEmpty())badges.append(b.extension.toUpperCase(Locale.ROOT));if(!b.language.isEmpty()){if(badges.length()>0)badges.append(" · ");badges.append(b.language.toUpperCase(Locale.ROOT));}if(!b.year.isEmpty()){if(badges.length()>0)badges.append(" · ");badges.append(b.year);}h.badges.setText(badges);h.badges.setVisibility(badges.length()==0?View.GONE:View.VISIBLE);h.itemView.setOnClickListener(v->bookClickListener.onBookClick(b));return;}
+        h.title.setTypeface(Typeface.DEFAULT,Typeface.NORMAL);h.author.setVisibility(View.GONE);h.series.setVisibility(View.GONE);h.badges.setVisibility(View.GONE);
+        if(mode==Mode.NAMES){String d=names.get(p);h.title.setText(humanizeNameRow(d));h.title.setTextSize(15);h.itemView.setOnClickListener(v->nameClickListener.onNameClick(d));return;}
+        h.title.setText(emptyText);h.title.setTextSize(15);h.title.setTextColor(activity.getColor(R.color.text_secondary));h.itemView.setBackground(null);
     }
 
-    void showBooks(List<BookItem> value) {
-        mode = value.isEmpty() ? Mode.EMPTY : Mode.BOOKS;
-        books = new ArrayList<>(value);
-        names = Collections.emptyList();
-        emptyText = "Нічого не знайдено";
-        notifyDataSetChanged();
+    private static String humanizeAuthor(String value){
+        String v=value.trim();
+        while(v.endsWith(":")||v.endsWith(";"))v=v.substring(0,v.length()-1).trim();
+        v=v.replace(',', ' ').replaceAll("\\s+"," ");
+        return v;
     }
+    private static String humanizeGenre(String value){return value.replace(':',' · ').replace('_',' ').trim();}
+    private static String humanizeNameRow(String value){int marker=value.lastIndexOf(" (");String name=marker>0&&value.endsWith(")")?value.substring(0,marker):value;String count=marker>0&&value.endsWith(")")?value.substring(marker):"";return humanizeAuthor(name)+count;}
 
-    void appendBooks(List<BookItem> value) {
-        if (value.isEmpty()) return;
-        if (mode != Mode.BOOKS) { showBooks(value); return; }
-        int start = books.size();
-        books.addAll(value);
-        notifyItemRangeInserted(start, value.size());
-    }
-
-    void showNames(List<String> value, String empty) {
-        mode = value.isEmpty() ? Mode.EMPTY : Mode.NAMES;
-        names = new ArrayList<>(value);
-        books = Collections.emptyList();
-        emptyText = empty;
-        notifyDataSetChanged();
-    }
-
-    void appendNames(List<String> value) {
-        if (value.isEmpty() || mode != Mode.NAMES) return;
-        int start = names.size();
-        names.addAll(value);
-        notifyItemRangeInserted(start, value.size());
-    }
-
-    int dataSize() {
-        if (mode == Mode.BOOKS) return books.size();
-        if (mode == Mode.NAMES) return names.size();
-        return 0;
-    }
-
-    @Override
-    public long getItemId(int position) {
-        if (mode == Mode.BOOKS) return books.get(position).id;
-        if (mode == Mode.NAMES) return names.get(position).hashCode();
-        return Long.MIN_VALUE;
-    }
-
-    @Override
-    public int getItemCount() {
-        if (mode == Mode.BOOKS) return books.size();
-        if (mode == Mode.NAMES) return names.size();
-        return 1;
-    }
-
-    @NonNull
-    @Override
-    public RowHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-        LinearLayout card = new LinearLayout(parent.getContext());
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(activity.dp(13), activity.dp(9), activity.dp(13), activity.dp(9));
-        card.setBackgroundResource(R.drawable.bg_book_row);
-        RecyclerView.LayoutParams params = new RecyclerView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = activity.dp(6);
-        card.setLayoutParams(params);
-
-        TextView title = textView(16, R.color.text_primary);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setMaxLines(2);
-        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        card.addView(title, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        TextView author = textView(14, R.color.text_secondary);
-        author.setMaxLines(1);
-        author.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams authorParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        authorParams.topMargin = activity.dp(2);
-        card.addView(author, authorParams);
-
-        LinearLayout metaRow = new LinearLayout(parent.getContext());
-        metaRow.setOrientation(LinearLayout.HORIZONTAL);
-        metaRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams metaRowParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        metaRowParams.topMargin = activity.dp(4);
-        card.addView(metaRow, metaRowParams);
-
-        TextView series = textView(12, R.color.text_secondary);
-        series.setMaxLines(1);
-        series.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        metaRow.addView(series, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        TextView badges = textView(11, R.color.primary);
-        badges.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        badges.setGravity(Gravity.END);
-        metaRow.addView(badges, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        return new RowHolder(card, title, author, series, badges);
-    }
-
-    private TextView textView(float size, int color) {
-        TextView view = new TextView(activity);
-        view.setTextSize(size);
-        view.setTextColor(activity.getColor(color));
-        view.setIncludeFontPadding(false);
-        return view;
-    }
-
-    @Override
-    public void onBindViewHolder(@NonNull RowHolder holder, int position) {
-        holder.itemView.setOnClickListener(null);
-        holder.title.setTextColor(activity.getColor(R.color.text_primary));
-        holder.author.setTextColor(activity.getColor(R.color.text_secondary));
-        holder.series.setTextColor(activity.getColor(R.color.text_secondary));
-        holder.badges.setTextColor(activity.getColor(R.color.primary));
-        holder.itemView.setBackgroundResource(R.drawable.bg_book_row);
-
-        if (mode == Mode.BOOKS) {
-            BookItem book = books.get(position);
-            holder.title.setText(book.title);
-            holder.author.setText(book.author.isEmpty() ? "Невідомий автор" : book.author);
-            holder.author.setVisibility(View.VISIBLE);
-
-            StringBuilder series = new StringBuilder();
-            if (!book.series.isEmpty()) {
-                series.append(book.series);
-                if (!book.seriesNumber.isEmpty()) series.append("  •  #").append(book.seriesNumber);
-            } else if (!book.genre.isEmpty()) {
-                series.append(book.genre);
-            }
-            holder.series.setText(series);
-            holder.series.setVisibility(series.length() == 0 ? View.GONE : View.VISIBLE);
-
-            StringBuilder badges = new StringBuilder();
-            if (!book.extension.isEmpty()) badges.append(book.extension.toUpperCase(Locale.ROOT));
-            if (!book.language.isEmpty()) {
-                if (badges.length() > 0) badges.append("  •  ");
-                badges.append(book.language.toUpperCase(Locale.ROOT));
-            }
-            if (!book.year.isEmpty()) {
-                if (badges.length() > 0) badges.append("  •  ");
-                badges.append(book.year);
-            }
-            holder.badges.setText(badges);
-            holder.badges.setVisibility(badges.length() == 0 ? View.GONE : View.VISIBLE);
-            holder.itemView.setOnClickListener(v -> bookClickListener.onBookClick(book));
-            return;
-        }
-
-        holder.title.setTypeface(Typeface.DEFAULT, Typeface.NORMAL);
-        holder.author.setVisibility(View.GONE);
-        holder.series.setVisibility(View.GONE);
-        holder.badges.setVisibility(View.GONE);
-
-        if (mode == Mode.NAMES) {
-            String display = names.get(position);
-            holder.title.setText(display);
-            holder.title.setTextSize(16);
-            holder.itemView.setOnClickListener(v -> nameClickListener.onNameClick(display));
-            return;
-        }
-
-        holder.title.setText(emptyText);
-        holder.title.setTextSize(15);
-        holder.title.setTextColor(activity.getColor(R.color.text_secondary));
-        holder.itemView.setBackground(null);
-    }
-
-    static final class RowHolder extends RecyclerView.ViewHolder {
-        final TextView title;
-        final TextView author;
-        final TextView series;
-        final TextView badges;
-
-        RowHolder(@NonNull View itemView, TextView title, TextView author,
-                  TextView series, TextView badges) {
-            super(itemView);
-            this.title = title;
-            this.author = author;
-            this.series = series;
-            this.badges = badges;
-        }
-    }
+    static final class RowHolder extends RecyclerView.ViewHolder{final TextView title,author,series,badges;RowHolder(@NonNull View itemView,TextView title,TextView author,TextView series,TextView badges){super(itemView);this.title=title;this.author=author;this.series=series;this.badges=badges;}}
 }
