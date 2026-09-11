@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#0F1115</color>
+    <color name="surface">#171A20</color>
+    <color name="surface_alt">#20242C</color>
+    <color name="primary">#AFC6FF</color>
+    <color name="on_primary">#102653</color>
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#B7BDC8</color>
+    <color name="outline">#343A45</color>
+    <color name="ripple">#33AFC6FF</color>
+</resources>
