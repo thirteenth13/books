@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@ namespace flibrary::android {
 
 constexpr char kInpFieldSeparator = '\x04';
 constexpr std::size_t kInpBookFieldCount = 17;
+constexpr std::size_t kMissingField = std::numeric_limits<std::size_t>::max();
 
 enum class BookField : std::size_t {
     Author = 0,
@@ -30,6 +32,26 @@ enum class BookField : std::size_t {
     Keywords,
     Year,
     SourceLibrary,
+};
+
+struct FieldLayout {
+    std::array<std::size_t, kInpBookFieldCount> indexes{};
+
+    FieldLayout() {
+        for (std::size_t i = 0; i < indexes.size(); ++i) indexes[i] = i;
+    }
+
+    std::size_t Get(BookField field) const {
+        return indexes[static_cast<std::size_t>(field)];
+    }
+
+    void Set(BookField field, std::size_t index) {
+        indexes[static_cast<std::size_t>(field)] = index;
+    }
+
+    void Clear() {
+        indexes.fill(kMissingField);
+    }
 };
 
 struct BookRecord {
@@ -57,23 +79,17 @@ inline bool IsValidUtf8(std::string_view value) {
     std::size_t i = 0;
     while (i < value.size()) {
         const unsigned char lead = bytes[i];
-        if (lead <= 0x7f) {
-            ++i;
-            continue;
-        }
+        if (lead <= 0x7f) { ++i; continue; }
 
         std::size_t length = 0;
         std::uint32_t codePoint = 0;
         if ((lead & 0xe0) == 0xc0) {
-            length = 2;
-            codePoint = lead & 0x1f;
-            if (codePoint < 2) return false; // overlong ASCII
+            length = 2; codePoint = lead & 0x1f;
+            if (codePoint < 2) return false;
         } else if ((lead & 0xf0) == 0xe0) {
-            length = 3;
-            codePoint = lead & 0x0f;
+            length = 3; codePoint = lead & 0x0f;
         } else if ((lead & 0xf8) == 0xf0) {
-            length = 4;
-            codePoint = lead & 0x07;
+            length = 4; codePoint = lead & 0x07;
         } else {
             return false;
         }
@@ -88,9 +104,7 @@ inline bool IsValidUtf8(std::string_view value) {
         if ((length == 3 && codePoint < 0x800) ||
             (length == 4 && codePoint < 0x10000) ||
             codePoint > 0x10ffff ||
-            (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
-            return false;
-        }
+            (codePoint >= 0xd800 && codePoint <= 0xdfff)) return false;
         i += length;
     }
     return true;
@@ -112,7 +126,6 @@ inline void AppendUtf8(std::string& output, std::uint32_t codePoint) {
 inline std::uint32_t Cp1251CodePoint(unsigned char byte) {
     if (byte < 0x80) return byte;
     if (byte >= 0xc0) return 0x0410u + (byte - 0xc0u);
-
     static constexpr std::array<std::uint16_t, 64> table = {
         0x0402, 0x0403, 0x201a, 0x0453, 0x201e, 0x2026, 0x2020, 0x2021,
         0x20ac, 0x2030, 0x0409, 0x2039, 0x040a, 0x040c, 0x040b, 0x040f,
@@ -129,9 +142,7 @@ inline std::uint32_t Cp1251CodePoint(unsigned char byte) {
 inline std::string Cp1251ToUtf8(std::string_view value) {
     std::string output;
     output.reserve(value.size() * 2);
-    for (unsigned char byte : value) {
-        AppendUtf8(output, Cp1251CodePoint(byte));
-    }
+    for (unsigned char byte : value) AppendUtf8(output, Cp1251CodePoint(byte));
     return output;
 }
 
@@ -143,85 +154,66 @@ inline std::string NormalizeInpText(std::string_view value) {
 inline std::vector<std::string_view> SplitInpFields(std::string_view line) {
     std::vector<std::string_view> fields;
     fields.reserve(kInpBookFieldCount);
-
     std::size_t start = 0;
     while (start <= line.size()) {
         const auto end = line.find(kInpFieldSeparator, start);
-        fields.push_back(line.substr(
-                start,
+        fields.push_back(line.substr(start,
                 end == std::string_view::npos ? line.size() - start : end - start));
-        if (end == std::string_view::npos) {
-            break;
-        }
+        if (end == std::string_view::npos) break;
         start = end + 1;
     }
     return fields;
 }
 
-inline std::string CopyField(
-        const std::vector<std::string_view>& fields,
-        BookField field) {
-    const auto index = static_cast<std::size_t>(field);
-    return index < fields.size() ? NormalizeInpText(fields[index]) : std::string{};
+inline std::string CopyField(const std::vector<std::string_view>& fields,
+                             const FieldLayout& layout,
+                             BookField field) {
+    const auto index = layout.Get(field);
+    return index != kMissingField && index < fields.size()
+            ? NormalizeInpText(fields[index]) : std::string{};
+}
+
+inline bool ParseBookRecord(std::string_view line, BookRecord& book,
+                            const FieldLayout& layout) {
+    const auto fields = SplitInpFields(line);
+    if (fields.empty()) return false;
+
+    book.author = CopyField(fields, layout, BookField::Author);
+    book.genre = CopyField(fields, layout, BookField::Genre);
+    book.title = CopyField(fields, layout, BookField::Title);
+    book.series = CopyField(fields, layout, BookField::Series);
+    book.seriesNumber = CopyField(fields, layout, BookField::SeriesNumber);
+    book.file = CopyField(fields, layout, BookField::File);
+    book.size = CopyField(fields, layout, BookField::Size);
+    book.libraryId = CopyField(fields, layout, BookField::LibraryId);
+    book.deleted = CopyField(fields, layout, BookField::Deleted);
+    book.extension = CopyField(fields, layout, BookField::Extension);
+    book.date = CopyField(fields, layout, BookField::Date);
+    book.folder = CopyField(fields, layout, BookField::Folder);
+    book.language = CopyField(fields, layout, BookField::Language);
+    book.libraryRate = CopyField(fields, layout, BookField::LibraryRate);
+    book.keywords = CopyField(fields, layout, BookField::Keywords);
+    book.year = CopyField(fields, layout, BookField::Year);
+    book.sourceLibrary = CopyField(fields, layout, BookField::SourceLibrary);
+    return !book.title.empty();
 }
 
 inline bool ParseBookRecord(std::string_view line, BookRecord& book) {
-    const auto fields = SplitInpFields(line);
-    if (fields.size() < 3) {
-        return false;
-    }
-
-    book.author = CopyField(fields, BookField::Author);
-    book.genre = CopyField(fields, BookField::Genre);
-    book.title = CopyField(fields, BookField::Title);
-    book.series = CopyField(fields, BookField::Series);
-    book.seriesNumber = CopyField(fields, BookField::SeriesNumber);
-    book.file = CopyField(fields, BookField::File);
-    book.size = CopyField(fields, BookField::Size);
-    book.libraryId = CopyField(fields, BookField::LibraryId);
-    book.deleted = CopyField(fields, BookField::Deleted);
-    book.extension = CopyField(fields, BookField::Extension);
-    book.date = CopyField(fields, BookField::Date);
-    book.folder = CopyField(fields, BookField::Folder);
-    book.language = CopyField(fields, BookField::Language);
-    book.libraryRate = CopyField(fields, BookField::LibraryRate);
-    book.keywords = CopyField(fields, BookField::Keywords);
-    book.year = CopyField(fields, BookField::Year);
-    book.sourceLibrary = CopyField(fields, BookField::SourceLibrary);
-
-    return !book.title.empty();
+    static const FieldLayout defaultLayout;
+    return ParseBookRecord(line, book, defaultLayout);
 }
 
 inline std::string BookSummary(const BookRecord& book) {
     std::string result = book.title;
-    if (!book.author.empty()) {
-        result += " — ";
-        result += book.author;
-    }
+    if (!book.author.empty()) { result += " — "; result += book.author; }
     if (!book.series.empty()) {
-        result += "\n  Series: ";
-        result += book.series;
-        if (!book.seriesNumber.empty()) {
-            result += " #";
-            result += book.seriesNumber;
-        }
+        result += "\n  Series: "; result += book.series;
+        if (!book.seriesNumber.empty()) { result += " #"; result += book.seriesNumber; }
     }
-    if (!book.genre.empty()) {
-        result += "\n  Genre: ";
-        result += book.genre;
-    }
-    if (!book.language.empty()) {
-        result += " | Lang: ";
-        result += book.language;
-    }
-    if (!book.extension.empty()) {
-        result += " | ";
-        result += book.extension;
-    }
-    if (!book.libraryId.empty()) {
-        result += " | ID: ";
-        result += book.libraryId;
-    }
+    if (!book.genre.empty()) { result += "\n  Genre: "; result += book.genre; }
+    if (!book.language.empty()) { result += " | Lang: "; result += book.language; }
+    if (!book.extension.empty()) { result += " | "; result += book.extension; }
+    if (!book.libraryId.empty()) { result += " | ID: "; result += book.libraryId; }
     return result;
 }
 
