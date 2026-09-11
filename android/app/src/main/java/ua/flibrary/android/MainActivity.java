@@ -1,29 +1,466 @@
 package ua.flibrary.android;
 
-import android.app.Activity; import android.app.AlertDialog; import android.content.ActivityNotFoundException; import android.content.Intent; import android.database.Cursor; import android.net.Uri; import android.os.Bundle; import android.os.Handler; import android.os.Looper; import android.os.ParcelFileDescriptor; import android.provider.OpenableColumns; import android.text.Editable; import android.text.TextWatcher; import android.view.inputmethod.EditorInfo; import android.widget.Button; import android.widget.EditText; import android.widget.RadioGroup; import android.widget.TextView;
-import androidx.core.content.FileProvider; import androidx.documentfile.provider.DocumentFile; import androidx.recyclerview.widget.LinearLayoutManager; import androidx.recyclerview.widget.RecyclerView;
-import java.io.File; import java.io.FileOutputStream; import java.io.IOException; import java.util.List; import java.util.Locale; import java.util.concurrent.ExecutorService; import java.util.concurrent.Executors; import java.util.concurrent.atomic.AtomicLong;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.provider.OpenableColumns;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.RadioGroup;
+import android.widget.TextView;
+
+import androidx.core.content.FileProvider;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.documentfile.provider.DocumentFile;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class MainActivity extends Activity {
- private static final int OPEN_INPX_REQUEST=1001,OPEN_LIBRARY_FOLDER_REQUEST=1002,PAGE_SIZE=100; private static final long SEARCH_DEBOUNCE_MS=400; private static final String PREFS="flibrary",PREF_LIBRARY_TREE="library_tree";
- static{System.loadLibrary("flibrary_android");} private native String nativeStatus(); private native String nativeImportInpx(int fd,CatalogDatabase db); private native byte[] nativeExtractBook(int fd,String file,String ext);
- private TextView status,resultsHeading; private EditText searchInput; private RecyclerView resultsList; private CatalogAdapter catalogAdapter; private CatalogDatabase catalogDatabase; private BookItem pendingBook; private Button importButton; private RadioGroup catalogTabs,bottomNavigation; private boolean namesAreAuthors,pageLoading,hasMorePages; private String pageHeading="Книги"; private BookPageSource bookPageSource; private NamePageSource namePageSource;
- private final ExecutorService worker=Executors.newSingleThreadExecutor(),queryWorker=Executors.newSingleThreadExecutor(); private final AtomicLong queryGeneration=new AtomicLong(); private final Handler searchHandler=new Handler(Looper.getMainLooper()); private final Runnable liveSearchRunnable=()->{if(searchInput==null)return;String q=searchInput.getText().toString().trim();if(q.isEmpty()){selectLibrary();startBookPaging("Книги",catalogDatabase::listBooks);}else if(q.length()>=2){selectLibrary();runSearch();}};
- private interface BookPageSource{List<BookItem> load(int limit,int offset);} private interface NamePageSource{List<String> load(int limit,int offset);}
- @Override protected void onCreate(Bundle b){super.onCreate(b);setContentView(R.layout.activity_main);catalogDatabase=new CatalogDatabase(this);status=findViewById(R.id.status);resultsHeading=findViewById(R.id.results_heading);searchInput=findViewById(R.id.search_input);resultsList=findViewById(R.id.results_list);importButton=findViewById(R.id.import_button);catalogTabs=findViewById(R.id.catalog_tabs);bottomNavigation=findViewById(R.id.bottom_navigation);catalogAdapter=new CatalogAdapter(this,this::showBookDetails,this::openName);LinearLayoutManager lm=new LinearLayoutManager(this);resultsList.setLayoutManager(lm);resultsList.setAdapter(catalogAdapter);resultsList.addOnScrollListener(new RecyclerView.OnScrollListener(){@Override public void onScrolled(RecyclerView r,int dx,int dy){if(dy<=0||pageLoading||!hasMorePages)return;int total=lm.getItemCount(),last=lm.findLastVisibleItemPosition();if(total>0&&last>=total-12)loadNextPage();}});
-  Button folder=findViewById(R.id.folder_button),settings=findViewById(R.id.settings_button),books=findViewById(R.id.books_button),authors=findViewById(R.id.authors_button),series=findViewById(R.id.series_button),search=findViewById(R.id.search_button),navLibrary=findViewById(R.id.nav_library),navFavorites=findViewById(R.id.nav_favorites),navRecent=findViewById(R.id.nav_recent),navSettings=findViewById(R.id.nav_settings);
-  importButton.setOnClickListener(v->openInpxDocument());folder.setOnClickListener(v->chooseLibraryFolder());settings.setOnClickListener(v->showLibrarySettings());books.setOnClickListener(v->{selectLibrary();startBookPaging("Книги",catalogDatabase::listBooks);});authors.setOnClickListener(v->{selectLibrary();startNamePaging(true);});series.setOnClickListener(v->{selectLibrary();startNamePaging(false);});navLibrary.setOnClickListener(v->{catalogTabs.check(R.id.books_button);startBookPaging("Книги",catalogDatabase::listBooks);});navFavorites.setOnClickListener(v->{catalogTabs.clearCheck();startBookPaging("Обране",catalogDatabase::listFavorites);});navRecent.setOnClickListener(v->{catalogTabs.clearCheck();startBookPaging("Нещодавні",catalogDatabase::listRecent);});navSettings.setOnClickListener(v->showLibrarySettings());search.setOnClickListener(v->{searchHandler.removeCallbacks(liveSearchRunnable);selectLibrary();runSearch();});searchInput.setOnEditorActionListener((v,a,e)->{if(a==EditorInfo.IME_ACTION_SEARCH||a==EditorInfo.IME_ACTION_DONE){searchHandler.removeCallbacks(liveSearchRunnable);selectLibrary();runSearch();return true;}return false;});searchInput.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int d){}public void onTextChanged(CharSequence s,int a,int c,int d){searchHandler.removeCallbacks(liveSearchRunnable);String q=s==null?"":s.toString().trim();if(q.isEmpty()||q.length()>=2)searchHandler.postDelayed(liveSearchRunnable,SEARCH_DEBOUNCE_MS);}public void afterTextChanged(Editable e){}});updateStatus();startBookPaging("Книги",catalogDatabase::listBooks);}
- private void selectLibrary(){if(bottomNavigation!=null)bottomNavigation.check(R.id.nav_library);} int dp(int v){return(int)(v*getResources().getDisplayMetrics().density);} private void showLibrarySettings(){String f=getLibraryTreeUri()==null?"не вибрана":"вибрана";new AlertDialog.Builder(this).setTitle("Налаштування бібліотеки").setMessage("Книг у каталозі: "+catalogDatabase.getBookCount()+"\nПапка бібліотеки: "+f).setItems(new String[]{"Імпортувати каталог INPX","Вибрати папку бібліотеки"},(d,w)->{if(w==0)openInpxDocument();else chooseLibraryFolder();}).setNegativeButton("Закрити",null).show();} private void updateStatus(){status.setText("Книг: "+catalogDatabase.getBookCount()+"  •  Папка: "+(getLibraryTreeUri()==null?"не вибрана":"готова"));}
- private void openInpxDocument(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,OPEN_INPX_REQUEST);} private void chooseLibraryFolder(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION|Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);startActivityForResult(i,OPEN_LIBRARY_FOLDER_REQUEST);}
- @Override protected void onActivityResult(int r,int result,Intent data){super.onActivityResult(r,result,data);if(result!=RESULT_OK||data==null)return;if(r==OPEN_LIBRARY_FOLDER_REQUEST){Uri tree=data.getData();if(tree==null)return;int flags=data.getFlags()&Intent.FLAG_GRANT_READ_URI_PERMISSION;try{getContentResolver().takePersistableUriPermission(tree,flags);}catch(SecurityException ignored){}getSharedPreferences(PREFS,MODE_PRIVATE).edit().putString(PREF_LIBRARY_TREE,tree.toString()).apply();updateStatus();if(pendingBook!=null){BookItem x=pendingBook;pendingBook=null;openBook(x);}return;}if(r!=OPEN_INPX_REQUEST)return;Uri uri=data.getData();if(uri==null)return;int flags=data.getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);try{getContentResolver().takePersistableUriPermission(uri,flags);}catch(SecurityException ignored){}startInpxImport(uri,queryDisplayName(uri));}
- private void startInpxImport(Uri uri,String name){importButton.setEnabled(false);queryGeneration.incrementAndGet();status.setText("Імпортую "+name+"…");worker.execute(()->{boolean started=false,success=false;String msg;try(ParcelFileDescriptor p=getContentResolver().openFileDescriptor(uri,"r")){if(p==null)msg="Не вдалося відкрити вибраний INPX";else{catalogDatabase.beginNativeImport();started=true;String x=nativeImportInpx(p.getFd(),catalogDatabase);success=x!=null&&x.startsWith("OK:");msg=x==null?"Помилка нативного імпорту":x;}}catch(IOException|RuntimeException e){msg="Помилка імпорту: "+safeMessage(e);}if(started)try{catalogDatabase.finishNativeImport(success);}catch(RuntimeException e){msg="Помилка завершення бази: "+safeMessage(e);success=false;}boolean ok=success;String out=msg;runOnUiThread(()->{if(isFinishing()||isDestroyed())return;importButton.setEnabled(true);if(ok){selectLibrary();catalogTabs.check(R.id.books_button);updateStatus();startBookPaging("Книги",catalogDatabase::listBooks);}else{status.setText(out);showErrorDialog(out);}});});}
- private void startBookPaging(String h,BookPageSource src){long g=queryGeneration.incrementAndGet();pageHeading=h;bookPageSource=src;namePageSource=null;pageLoading=true;hasMorePages=false;resultsHeading.setText(h+"  •  …");queryWorker.execute(()->{if(g!=queryGeneration.get())return;try{List<BookItem> p=src.load(PAGE_SIZE,0);runOnUiThread(()->{if(isFinishing()||isDestroyed()||g!=queryGeneration.get())return;catalogAdapter.showBooks(p);resultsHeading.setText(h+"  •  "+p.size());resultsList.scrollToPosition(0);pageLoading=false;hasMorePages=p.size()==PAGE_SIZE;});}catch(RuntimeException e){postCatalogError(g,e);}});}
- private void startNamePaging(boolean authors){long g=queryGeneration.incrementAndGet();namesAreAuthors=authors;pageHeading=authors?"Автори":"Серії";bookPageSource=null;namePageSource=authors?catalogDatabase::listAuthors:catalogDatabase::listSeries;pageLoading=true;hasMorePages=false;resultsHeading.setText(pageHeading+"  •  …");NamePageSource src=namePageSource;queryWorker.execute(()->{if(g!=queryGeneration.get())return;try{List<String> p=src.load(PAGE_SIZE,0);runOnUiThread(()->{if(isFinishing()||isDestroyed()||g!=queryGeneration.get())return;catalogAdapter.showNames(p,authors?"Авторів не знайдено":"Серій не знайдено");resultsHeading.setText(pageHeading+"  •  "+p.size());resultsList.scrollToPosition(0);pageLoading=false;hasMorePages=p.size()==PAGE_SIZE;});}catch(RuntimeException e){postCatalogError(g,e);}});}
- private void loadNextPage(){if(pageLoading||!hasMorePages)return;long g=queryGeneration.get();int o=catalogAdapter.dataSize();BookPageSource bs=bookPageSource;NamePageSource ns=namePageSource;if(bs==null&&ns==null)return;pageLoading=true;queryWorker.execute(()->{if(g!=queryGeneration.get())return;try{if(bs!=null){List<BookItem> p=bs.load(PAGE_SIZE,o);runOnUiThread(()->{if(isFinishing()||isDestroyed()||g!=queryGeneration.get())return;catalogAdapter.appendBooks(p);pageLoading=false;hasMorePages=p.size()==PAGE_SIZE;resultsHeading.setText(pageHeading+"  •  "+catalogAdapter.dataSize());});}else{List<String> p=ns.load(PAGE_SIZE,o);runOnUiThread(()->{if(isFinishing()||isDestroyed()||g!=queryGeneration.get())return;catalogAdapter.appendNames(p);pageLoading=false;hasMorePages=p.size()==PAGE_SIZE;resultsHeading.setText(pageHeading+"  •  "+catalogAdapter.dataSize());});}}catch(RuntimeException e){postCatalogError(g,e);}});}
- private void postCatalogError(long g,RuntimeException e){runOnUiThread(()->{if(isFinishing()||isDestroyed()||g!=queryGeneration.get())return;pageLoading=false;hasMorePages=false;showError("Помилка каталогу: "+safeMessage(e));});} private void runSearch(){String q=searchInput.getText().toString().trim();if(q.isEmpty()){catalogTabs.check(R.id.books_button);startBookPaging("Книги",catalogDatabase::listBooks);return;}catalogTabs.clearCheck();startBookPaging("Пошук: "+q,(l,o)->catalogDatabase.searchBooks(q,l,o));} private void openName(String d){selectLibrary();String n=stripCount(d);if(namesAreAuthors)startBookPaging(n,(l,o)->catalogDatabase.booksByAuthor(n,l,o));else startBookPaging(n,(l,o)->catalogDatabase.booksBySeries(n,l,o));} private String stripCount(String d){int m=d.lastIndexOf(" (");return m>0&&d.endsWith(")")?d.substring(0,m):d;}
- private void showBookDetails(BookItem b){boolean fav=catalogDatabase.isFavorite(b);BookDetailsPage.show(this,b,fav,()->openBook(b),()->{selectLibrary();catalogTabs.check(R.id.books_button);startBookPaging(b.author,(l,o)->catalogDatabase.booksByAuthor(b.author,l,o));},()->{selectLibrary();catalogTabs.check(R.id.books_button);startBookPaging(b.series,(l,o)->catalogDatabase.booksBySeries(b.series,l,o));},()->catalogDatabase.toggleFavorite(b));}
- private Uri getLibraryTreeUri(){String v=getSharedPreferences(PREFS,MODE_PRIVATE).getString(PREF_LIBRARY_TREE,null);return v==null?null:Uri.parse(v);} private DocumentFile findArchive(BookItem b){Uri t=getLibraryTreeUri();if(t==null||b.folder.isEmpty())return null;DocumentFile root=DocumentFile.fromTreeUri(this,t);if(root==null)return null;DocumentFile a=findArchiveFrom(root,b.folder);if(a!=null)return a;DocumentFile archives=findChildIgnoreCase(root,"archives");if(archives!=null&&archives.isDirectory()){a=findArchiveFrom(archives,b.folder);if(a!=null)return a;}String n=normalizeArchivePath(b.folder);int slash=n.lastIndexOf('/');String base=slash>=0?n.substring(slash+1):n;a=findArchiveFrom(root,base);if(a!=null)return a;return archives==null?null:findArchiveFrom(archives,base);} private DocumentFile findArchiveFrom(DocumentFile root,String raw){String p=normalizeArchivePath(raw);if(p.isEmpty())return null;DocumentFile cur=root;for(String part:p.split("/")){if(part.isEmpty())continue;cur=findChildIgnoreCase(cur,part);if(cur==null)return null;}if(cur.isFile())return cur;if(!p.toLowerCase(Locale.ROOT).endsWith(".zip")){DocumentFile z=findChildIgnoreCase(root,p+".zip");if(z!=null&&z.isFile())return z;}return null;} private String normalizeArchivePath(String v){String p=v.replace('\\','/').trim();while(p.startsWith("/"))p=p.substring(1);if(p.regionMatches(true,0,"archives/",0,9))p=p.substring(9);return p;} private DocumentFile findChildIgnoreCase(DocumentFile p,String n){DocumentFile e=p.findFile(n);if(e!=null)return e;for(DocumentFile c:p.listFiles())if(n.equalsIgnoreCase(c.getName()))return c;return null;}
- private void openBook(BookItem b){if(getLibraryTreeUri()==null){pendingBook=b;new AlertDialog.Builder(this).setTitle("Папка бібліотеки не вибрана").setMessage("Виберіть папку, де лежать архіви книг. Доступ буде збережено для наступних запусків.").setPositiveButton("Вибрати папку",(d,w)->chooseLibraryFolder()).setNegativeButton("Скасувати",null).show();return;}status.setText("Відкриваю: "+b.title+"…");worker.execute(()->{DocumentFile a=findArchive(b);if(a==null){postOpenError("Не знайдено архів: "+b.folder);return;}try(ParcelFileDescriptor p=getContentResolver().openFileDescriptor(a.getUri(),"r")){if(p==null){postOpenError("Не вдалося відкрити архів: "+a.getName());return;}byte[] bytes=nativeExtractBook(p.getFd(),b.fileName,b.extension);if(bytes==null||bytes.length==0){postOpenError("Не вдалося витягнути книгу з архіву");return;}File out=writeBookToCache(b,bytes);catalogDatabase.markOpened(b);runOnUiThread(()->{if(isFinishing()||isDestroyed())return;updateStatus();openCachedBook(out,b.extension);});}catch(IOException|RuntimeException e){postOpenError("Помилка відкриття книги: "+safeMessage(e));}});}
- private void postOpenError(String m){runOnUiThread(()->{if(isFinishing()||isDestroyed())return;updateStatus();showErrorDialog(m);});} private File writeBookToCache(BookItem b,byte[] bytes)throws IOException{File dir=new File(getCacheDir(),"opened_books");if(!dir.exists()&&!dir.mkdirs())throw new IOException("Не вдалося створити кеш книг");String base=b.fileName.isEmpty()?"book-"+b.id:b.fileName,ext=b.extension.isEmpty()?"fb2":b.extension.toLowerCase(Locale.ROOT);if(!base.toLowerCase(Locale.ROOT).endsWith("."+ext))base+="."+ext;File out=new File(dir,sanitizeFileName(base));try(FileOutputStream s=new FileOutputStream(out)){s.write(bytes);}return out;} private String sanitizeFileName(String v){return v.replaceAll("[\\\\/:*?\"<>|]","_");} private void openCachedBook(File f,String ext){Uri u=FileProvider.getUriForFile(this,getPackageName()+".files",f);Intent i=new Intent(Intent.ACTION_VIEW);i.setDataAndType(u,mimeForExtension(ext));i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);try{startActivity(Intent.createChooser(i,"Відкрити книгу"));}catch(ActivityNotFoundException e){showErrorDialog("На пристрої немає застосунку для формату "+ext.toUpperCase(Locale.ROOT));}} private String mimeForExtension(String e){String x=e==null?"":e.toLowerCase(Locale.ROOT);switch(x){case"fb2":return"application/x-fictionbook+xml";case"epub":return"application/epub+zip";case"pdf":return"application/pdf";case"mobi":return"application/x-mobipocket-ebook";case"djvu":case"djv":return"image/vnd.djvu";case"txt":return"text/plain";case"rtf":return"application/rtf";default:return"application/octet-stream";}}
- private String queryDisplayName(Uri u){try(Cursor c=getContentResolver().query(u,new String[]{OpenableColumns.DISPLAY_NAME},null,null,null)){if(c!=null&&c.moveToFirst()){int i=c.getColumnIndex(OpenableColumns.DISPLAY_NAME);if(i>=0)return c.getString(i);}}catch(RuntimeException ignored){}return u.getLastPathSegment()==null?"INPX":u.getLastPathSegment();} private void showError(String m){status.setText(m);showErrorDialog(m);} private void showErrorDialog(String m){new AlertDialog.Builder(this).setTitle("FLibrary").setMessage(m).setPositiveButton("OK",null).show();} private String safeMessage(Throwable e){String m=e.getMessage();return m==null||m.isEmpty()?e.getClass().getSimpleName():m;} @Override protected void onDestroy(){searchHandler.removeCallbacks(liveSearchRunnable);queryGeneration.incrementAndGet();worker.shutdownNow();queryWorker.shutdownNow();if(catalogDatabase!=null)catalogDatabase.close();super.onDestroy();}
+    private static final int OPEN_INPX_REQUEST = 1001;
+    private static final int OPEN_LIBRARY_FOLDER_REQUEST = 1002;
+    private static final int PAGE_SIZE = 100;
+    private static final long SEARCH_DEBOUNCE_MS = 400;
+    private static final String PREFS = "flibrary";
+    private static final String PREF_LIBRARY_TREE = "library_tree";
+
+    static { System.loadLibrary("flibrary_android"); }
+    private native String nativeStatus();
+    private native String nativeImportInpx(int fd, CatalogDatabase db);
+    private native byte[] nativeExtractBook(int fd, String file, String ext);
+
+    private TextView status, resultsHeading;
+    private EditText searchInput;
+    private RecyclerView resultsList;
+    private CatalogAdapter catalogAdapter;
+    private CatalogDatabase catalogDatabase;
+    private BookItem pendingBook;
+    private Button importButton;
+    private RadioGroup catalogTabs, bottomNavigation;
+    private boolean namesAreAuthors, pageLoading, hasMorePages;
+    private String pageHeading = "Книги";
+    private BookPageSource bookPageSource;
+    private NamePageSource namePageSource;
+
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService queryWorker = Executors.newSingleThreadExecutor();
+    private final AtomicLong queryGeneration = new AtomicLong();
+    private final Handler searchHandler = new Handler(Looper.getMainLooper());
+    private final Runnable liveSearchRunnable = () -> {
+        if (searchInput == null) return;
+        String q = searchInput.getText().toString().trim();
+        if (q.isEmpty()) {
+            selectLibrary();
+            startBookPaging("Книги", catalogDatabase::listBooks);
+        } else if (q.length() >= 2) {
+            selectLibrary();
+            runSearch();
+        }
+    };
+
+    private interface BookPageSource { List<BookItem> load(int limit, int offset); }
+    private interface NamePageSource { List<String> load(int limit, int offset); }
+
+    @Override protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        setContentView(R.layout.activity_main);
+        catalogDatabase = new CatalogDatabase(this);
+
+        View root = findViewById(R.id.main_root);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            androidx.core.graphics.Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(dp(14) + bars.left, dp(12) + bars.top, dp(14) + bars.right, dp(8) + bars.bottom);
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(root);
+
+        status = findViewById(R.id.status);
+        resultsHeading = findViewById(R.id.results_heading);
+        searchInput = findViewById(R.id.search_input);
+        resultsList = findViewById(R.id.results_list);
+        importButton = findViewById(R.id.import_button);
+        catalogTabs = findViewById(R.id.catalog_tabs);
+        bottomNavigation = findViewById(R.id.bottom_navigation);
+
+        catalogAdapter = new CatalogAdapter(this, this::showBookDetails, this::openName);
+        LinearLayoutManager lm = new LinearLayoutManager(this);
+        resultsList.setLayoutManager(lm);
+        resultsList.setAdapter(catalogAdapter);
+        resultsList.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(RecyclerView r, int dx, int dy) {
+                if (dy <= 0 || pageLoading || !hasMorePages) return;
+                int total = lm.getItemCount();
+                int last = lm.findLastVisibleItemPosition();
+                if (total > 0 && last >= total - 12) loadNextPage();
+            }
+        });
+
+        Button folder = findViewById(R.id.folder_button);
+        Button books = findViewById(R.id.books_button);
+        Button authors = findViewById(R.id.authors_button);
+        Button series = findViewById(R.id.series_button);
+        Button search = findViewById(R.id.search_button);
+        Button navLibrary = findViewById(R.id.nav_library);
+        Button navFavorites = findViewById(R.id.nav_favorites);
+        Button navRecent = findViewById(R.id.nav_recent);
+        Button navSettings = findViewById(R.id.nav_settings);
+
+        importButton.setOnClickListener(v -> openInpxDocument());
+        folder.setOnClickListener(v -> chooseLibraryFolder());
+        books.setOnClickListener(v -> { selectLibrary(); startBookPaging("Книги", catalogDatabase::listBooks); });
+        authors.setOnClickListener(v -> { selectLibrary(); startNamePaging(true); });
+        series.setOnClickListener(v -> { selectLibrary(); startNamePaging(false); });
+        navLibrary.setOnClickListener(v -> { catalogTabs.check(R.id.books_button); startBookPaging("Книги", catalogDatabase::listBooks); });
+        navFavorites.setOnClickListener(v -> { catalogTabs.clearCheck(); startBookPaging("Обране", catalogDatabase::listFavorites); });
+        navRecent.setOnClickListener(v -> { catalogTabs.clearCheck(); startBookPaging("Нещодавні", catalogDatabase::listRecent); });
+        navSettings.setOnClickListener(v -> showLibrarySettings());
+        search.setOnClickListener(v -> { searchHandler.removeCallbacks(liveSearchRunnable); selectLibrary(); runSearch(); });
+        searchInput.setOnEditorActionListener((v, a, e) -> {
+            if (a == EditorInfo.IME_ACTION_SEARCH || a == EditorInfo.IME_ACTION_DONE) {
+                searchHandler.removeCallbacks(liveSearchRunnable);
+                selectLibrary();
+                runSearch();
+                return true;
+            }
+            return false;
+        });
+        searchInput.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int c, int d) {}
+            public void onTextChanged(CharSequence s, int a, int c, int d) {
+                searchHandler.removeCallbacks(liveSearchRunnable);
+                String q = s == null ? "" : s.toString().trim();
+                if (q.isEmpty() || q.length() >= 2) searchHandler.postDelayed(liveSearchRunnable, SEARCH_DEBOUNCE_MS);
+            }
+            public void afterTextChanged(Editable e) {}
+        });
+
+        updateStatus();
+        startBookPaging("Книги", catalogDatabase::listBooks);
+    }
+
+    private void selectLibrary() {
+        if (bottomNavigation != null) bottomNavigation.check(R.id.nav_library);
+    }
+
+    int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
+
+    private void showLibrarySettings() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(22), dp(8), dp(22), dp(4));
+
+        TextView summary = new TextView(this);
+        summary.setText("Книг у каталозі: " + catalogDatabase.getBookCount() +
+                "\nПапка бібліотеки: " + (getLibraryTreeUri() == null ? "не вибрана" : "вибрана"));
+        summary.setTextSize(16);
+        summary.setTextColor(getColor(R.color.text_primary));
+        panel.addView(summary, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button importAction = settingsAction("Імпортувати каталог INPX");
+        LinearLayout.LayoutParams importParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        importParams.topMargin = dp(18);
+        panel.addView(importAction, importParams);
+
+        Button folderAction = settingsAction("Вибрати папку бібліотеки");
+        LinearLayout.LayoutParams folderParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        folderParams.topMargin = dp(8);
+        panel.addView(folderAction, folderParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Налаштування бібліотеки")
+                .setView(panel)
+                .setNegativeButton("Закрити", null)
+                .create();
+
+        importAction.setOnClickListener(v -> { dialog.dismiss(); openInpxDocument(); });
+        folderAction.setOnClickListener(v -> { dialog.dismiss(); chooseLibraryFolder(); });
+        dialog.show();
+    }
+
+    private Button settingsAction(String text) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setPadding(dp(16), 0, dp(16), 0);
+        return button;
+    }
+
+    private void updateStatus() {
+        status.setText("Книг: " + catalogDatabase.getBookCount() + "  •  Папка: " + (getLibraryTreeUri() == null ? "не вибрана" : "готова"));
+    }
+
+    private void openInpxDocument() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        startActivityForResult(i, OPEN_INPX_REQUEST);
+    }
+
+    private void chooseLibraryFolder() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        startActivityForResult(i, OPEN_LIBRARY_FOLDER_REQUEST);
+    }
+
+    @Override protected void onActivityResult(int r, int result, Intent data) {
+        super.onActivityResult(r, result, data);
+        if (result != RESULT_OK || data == null) return;
+        if (r == OPEN_LIBRARY_FOLDER_REQUEST) {
+            Uri tree = data.getData();
+            if (tree == null) return;
+            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            try { getContentResolver().takePersistableUriPermission(tree, flags); } catch (SecurityException ignored) {}
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_LIBRARY_TREE, tree.toString()).apply();
+            updateStatus();
+            if (pendingBook != null) { BookItem x = pendingBook; pendingBook = null; openBook(x); }
+            return;
+        }
+        if (r != OPEN_INPX_REQUEST) return;
+        Uri uri = data.getData();
+        if (uri == null) return;
+        int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try { getContentResolver().takePersistableUriPermission(uri, flags); } catch (SecurityException ignored) {}
+        startInpxImport(uri, queryDisplayName(uri));
+    }
+
+    private void startInpxImport(Uri uri, String name) {
+        importButton.setEnabled(false);
+        queryGeneration.incrementAndGet();
+        status.setText("Імпортую " + name + "…");
+        worker.execute(() -> {
+            boolean started = false, success = false;
+            String msg;
+            try (ParcelFileDescriptor p = getContentResolver().openFileDescriptor(uri, "r")) {
+                if (p == null) msg = "Не вдалося відкрити вибраний INPX";
+                else {
+                    catalogDatabase.beginNativeImport();
+                    started = true;
+                    String x = nativeImportInpx(p.getFd(), catalogDatabase);
+                    success = x != null && x.startsWith("OK:");
+                    msg = x == null ? "Помилка нативного імпорту" : x;
+                }
+            } catch (IOException | RuntimeException e) {
+                msg = "Помилка імпорту: " + safeMessage(e);
+            }
+            if (started) try { catalogDatabase.finishNativeImport(success); }
+            catch (RuntimeException e) { msg = "Помилка завершення бази: " + safeMessage(e); success = false; }
+            boolean ok = success;
+            String out = msg;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                importButton.setEnabled(true);
+                if (ok) {
+                    selectLibrary();
+                    catalogTabs.check(R.id.books_button);
+                    updateStatus();
+                    startBookPaging("Книги", catalogDatabase::listBooks);
+                } else {
+                    status.setText(out);
+                    showErrorDialog(out);
+                }
+            });
+        });
+    }
+
+    private void startBookPaging(String h, BookPageSource src) {
+        long g = queryGeneration.incrementAndGet();
+        pageHeading = h; bookPageSource = src; namePageSource = null; pageLoading = true; hasMorePages = false;
+        resultsHeading.setText(h + "  •  …");
+        queryWorker.execute(() -> {
+            if (g != queryGeneration.get()) return;
+            try {
+                List<BookItem> p = src.load(PAGE_SIZE, 0);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || g != queryGeneration.get()) return;
+                    catalogAdapter.showBooks(p); resultsHeading.setText(h + "  •  " + p.size()); resultsList.scrollToPosition(0); pageLoading = false; hasMorePages = p.size() == PAGE_SIZE;
+                });
+            } catch (RuntimeException e) { postCatalogError(g, e); }
+        });
+    }
+
+    private void startNamePaging(boolean authors) {
+        long g = queryGeneration.incrementAndGet();
+        namesAreAuthors = authors; pageHeading = authors ? "Автори" : "Серії"; bookPageSource = null; namePageSource = authors ? catalogDatabase::listAuthors : catalogDatabase::listSeries; pageLoading = true; hasMorePages = false;
+        resultsHeading.setText(pageHeading + "  •  …");
+        NamePageSource src = namePageSource;
+        queryWorker.execute(() -> {
+            if (g != queryGeneration.get()) return;
+            try {
+                List<String> p = src.load(PAGE_SIZE, 0);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || g != queryGeneration.get()) return;
+                    catalogAdapter.showNames(p, authors ? "Авторів не знайдено" : "Серій не знайдено"); resultsHeading.setText(pageHeading + "  •  " + p.size()); resultsList.scrollToPosition(0); pageLoading = false; hasMorePages = p.size() == PAGE_SIZE;
+                });
+            } catch (RuntimeException e) { postCatalogError(g, e); }
+        });
+    }
+
+    private void loadNextPage() {
+        if (pageLoading || !hasMorePages) return;
+        long g = queryGeneration.get(); int o = catalogAdapter.dataSize(); BookPageSource bs = bookPageSource; NamePageSource ns = namePageSource;
+        if (bs == null && ns == null) return;
+        pageLoading = true;
+        queryWorker.execute(() -> {
+            if (g != queryGeneration.get()) return;
+            try {
+                if (bs != null) {
+                    List<BookItem> p = bs.load(PAGE_SIZE, o);
+                    runOnUiThread(() -> { if (isFinishing() || isDestroyed() || g != queryGeneration.get()) return; catalogAdapter.appendBooks(p); pageLoading = false; hasMorePages = p.size() == PAGE_SIZE; resultsHeading.setText(pageHeading + "  •  " + catalogAdapter.dataSize()); });
+                } else {
+                    List<String> p = ns.load(PAGE_SIZE, o);
+                    runOnUiThread(() -> { if (isFinishing() || isDestroyed() || g != queryGeneration.get()) return; catalogAdapter.appendNames(p); pageLoading = false; hasMorePages = p.size() == PAGE_SIZE; resultsHeading.setText(pageHeading + "  •  " + catalogAdapter.dataSize()); });
+                }
+            } catch (RuntimeException e) { postCatalogError(g, e); }
+        });
+    }
+
+    private void postCatalogError(long g, RuntimeException e) {
+        runOnUiThread(() -> { if (isFinishing() || isDestroyed() || g != queryGeneration.get()) return; pageLoading = false; hasMorePages = false; showError("Помилка каталогу: " + safeMessage(e)); });
+    }
+
+    private void runSearch() {
+        String q = searchInput.getText().toString().trim();
+        if (q.isEmpty()) { catalogTabs.check(R.id.books_button); startBookPaging("Книги", catalogDatabase::listBooks); return; }
+        catalogTabs.clearCheck();
+        startBookPaging("Пошук: " + q, (l, o) -> catalogDatabase.searchBooks(q, l, o));
+    }
+
+    private void openName(String d) {
+        selectLibrary();
+        String n = stripCount(d);
+        if (namesAreAuthors) startBookPaging(n, (l, o) -> catalogDatabase.booksByAuthor(n, l, o));
+        else startBookPaging(n, (l, o) -> catalogDatabase.booksBySeries(n, l, o));
+    }
+
+    private String stripCount(String d) { int m = d.lastIndexOf(" ("); return m > 0 && d.endsWith(")") ? d.substring(0, m) : d; }
+
+    private void showBookDetails(BookItem b) {
+        boolean fav = catalogDatabase.isFavorite(b);
+        BookDetailsPage.show(this, b, fav, () -> openBook(b),
+                () -> { selectLibrary(); catalogTabs.check(R.id.books_button); startBookPaging(b.author, (l, o) -> catalogDatabase.booksByAuthor(b.author, l, o)); },
+                () -> { selectLibrary(); catalogTabs.check(R.id.books_button); startBookPaging(b.series, (l, o) -> catalogDatabase.booksBySeries(b.series, l, o)); },
+                () -> catalogDatabase.toggleFavorite(b));
+    }
+
+    private Uri getLibraryTreeUri() { String v = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_LIBRARY_TREE, null); return v == null ? null : Uri.parse(v); }
+
+    private DocumentFile findArchive(BookItem b) {
+        Uri t = getLibraryTreeUri(); if (t == null || b.folder.isEmpty()) return null;
+        DocumentFile root = DocumentFile.fromTreeUri(this, t); if (root == null) return null;
+        DocumentFile a = findArchiveFrom(root, b.folder); if (a != null) return a;
+        DocumentFile archives = findChildIgnoreCase(root, "archives");
+        if (archives != null && archives.isDirectory()) { a = findArchiveFrom(archives, b.folder); if (a != null) return a; }
+        String n = normalizeArchivePath(b.folder); int slash = n.lastIndexOf('/'); String base = slash >= 0 ? n.substring(slash + 1) : n;
+        a = findArchiveFrom(root, base); if (a != null) return a;
+        return archives == null ? null : findArchiveFrom(archives, base);
+    }
+
+    private DocumentFile findArchiveFrom(DocumentFile root, String raw) {
+        String p = normalizeArchivePath(raw); if (p.isEmpty()) return null;
+        DocumentFile cur = root;
+        for (String part : p.split("/")) { if (part.isEmpty()) continue; cur = findChildIgnoreCase(cur, part); if (cur == null) return null; }
+        if (cur.isFile()) return cur;
+        if (!p.toLowerCase(Locale.ROOT).endsWith(".zip")) { DocumentFile z = findChildIgnoreCase(root, p + ".zip"); if (z != null && z.isFile()) return z; }
+        return null;
+    }
+
+    private String normalizeArchivePath(String v) { String p = v.replace('\\', '/').trim(); while (p.startsWith("/")) p = p.substring(1); if (p.regionMatches(true, 0, "archives/", 0, 9)) p = p.substring(9); return p; }
+    private DocumentFile findChildIgnoreCase(DocumentFile p, String n) { DocumentFile e = p.findFile(n); if (e != null) return e; for (DocumentFile c : p.listFiles()) if (n.equalsIgnoreCase(c.getName())) return c; return null; }
+
+    private void openBook(BookItem b) {
+        if (getLibraryTreeUri() == null) {
+            pendingBook = b;
+            new AlertDialog.Builder(this).setTitle("Папка бібліотеки не вибрана").setMessage("Виберіть папку, де лежать архіви книг. Доступ буде збережено для наступних запусків.").setPositiveButton("Вибрати папку", (d, w) -> chooseLibraryFolder()).setNegativeButton("Скасувати", null).show();
+            return;
+        }
+        status.setText("Відкриваю: " + b.title + "…");
+        worker.execute(() -> {
+            DocumentFile a = findArchive(b); if (a == null) { postOpenError("Не знайдено архів: " + b.folder); return; }
+            try (ParcelFileDescriptor p = getContentResolver().openFileDescriptor(a.getUri(), "r")) {
+                if (p == null) { postOpenError("Не вдалося відкрити архів: " + a.getName()); return; }
+                byte[] bytes = nativeExtractBook(p.getFd(), b.fileName, b.extension); if (bytes == null || bytes.length == 0) { postOpenError("Не вдалося витягнути книгу з архіву"); return; }
+                File out = writeBookToCache(b, bytes); catalogDatabase.markOpened(b);
+                runOnUiThread(() -> { if (isFinishing() || isDestroyed()) return; updateStatus(); openCachedBook(out, b.extension); });
+            } catch (IOException | RuntimeException e) { postOpenError("Помилка відкриття книги: " + safeMessage(e)); }
+        });
+    }
+
+    private void postOpenError(String m) { runOnUiThread(() -> { if (isFinishing() || isDestroyed()) return; updateStatus(); showErrorDialog(m); }); }
+
+    private File writeBookToCache(BookItem b, byte[] bytes) throws IOException {
+        File dir = new File(getCacheDir(), "opened_books"); if (!dir.exists() && !dir.mkdirs()) throw new IOException("Не вдалося створити кеш книг");
+        String base = b.fileName.isEmpty() ? "book-" + b.id : b.fileName;
+        String ext = b.extension.isEmpty() ? "fb2" : b.extension.toLowerCase(Locale.ROOT);
+        if (!base.toLowerCase(Locale.ROOT).endsWith("." + ext)) base += "." + ext;
+        File out = new File(dir, sanitizeFileName(base));
+        try (FileOutputStream s = new FileOutputStream(out)) { s.write(bytes); }
+        return out;
+    }
+
+    private String sanitizeFileName(String v) { return v.replaceAll("[\\\\/:*?\"<>|]", "_"); }
+
+    private void openCachedBook(File f, String ext) {
+        Uri u = FileProvider.getUriForFile(this, getPackageName() + ".files", f);
+        Intent i = new Intent(Intent.ACTION_VIEW); i.setDataAndType(u, mimeForExtension(ext)); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try { startActivity(Intent.createChooser(i, "Відкрити книгу")); }
+        catch (ActivityNotFoundException e) { showErrorDialog("На пристрої немає застосунку для формату " + ext.toUpperCase(Locale.ROOT)); }
+    }
+
+    private String mimeForExtension(String e) {
+        String x = e == null ? "" : e.toLowerCase(Locale.ROOT);
+        switch (x) {
+            case "fb2": return "application/x-fictionbook+xml";
+            case "epub": return "application/epub+zip";
+            case "pdf": return "application/pdf";
+            case "mobi": return "application/x-mobipocket-ebook";
+            case "djvu": case "djv": return "image/vnd.djvu";
+            case "txt": return "text/plain";
+            case "rtf": return "application/rtf";
+            default: return "application/octet-stream";
+        }
+    }
+
+    private String queryDisplayName(Uri u) {
+        try (Cursor c = getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) { int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (i >= 0) return c.getString(i); }
+        } catch (RuntimeException ignored) {}
+        return u.getLastPathSegment() == null ? "INPX" : u.getLastPathSegment();
+    }
+
+    private void showError(String m) { status.setText(m); showErrorDialog(m); }
+    private void showErrorDialog(String m) { new AlertDialog.Builder(this).setTitle("FLibrary").setMessage(m).setPositiveButton("OK", null).show(); }
+    private String safeMessage(Throwable e) { String m = e.getMessage(); return m == null || m.isEmpty() ? e.getClass().getSimpleName() : m; }
+
+    @Override protected void onDestroy() {
+        searchHandler.removeCallbacks(liveSearchRunnable);
+        queryGeneration.incrementAndGet();
+        worker.shutdownNow();
+        queryWorker.shutdownNow();
+        if (catalogDatabase != null) catalogDatabase.close();
+        super.onDestroy();
+    }
 }
