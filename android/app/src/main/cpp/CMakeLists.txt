@@ -12,6 +12,7 @@ endif()
 
 add_library(flibrary_android SHARED
     native_bridge.cpp
+    book_archive_bridge.cpp
 )
 
 target_compile_features(flibrary_android PRIVATE cxx_std_23)
