@@ -122,21 +122,24 @@
             android:textAllCaps="false" />
     </LinearLayout>
 
-    <ScrollView
-        android:id="@+id/results_scroll"
+    <TextView
+        android:id="@+id/results_heading"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="2dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="2dp"
+        android:paddingBottom="12dp"
+        android:textColor="@color/text_primary"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/results_list"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp"
-        android:fillViewport="true"
         android:clipToPadding="false"
-        android:paddingBottom="16dp">
-
-        <LinearLayout
-            android:id="@+id/results"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </ScrollView>
+        android:paddingBottom="16dp" />
 
 </LinearLayout>
