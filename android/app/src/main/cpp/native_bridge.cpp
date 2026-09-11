@@ -1,11 +1,13 @@
 #include <jni.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "InpxConstant.h"
@@ -17,7 +19,11 @@ constexpr std::uint32_t ZIP_EOCD_SIGNATURE = 0x06054b50;
 constexpr std::size_t ZIP_EOCD_MIN_SIZE = 22;
 constexpr std::size_t ZIP_MAX_COMMENT = 65535;
 constexpr std::size_t ZIP_CENTRAL_HEADER_SIZE = 46;
+constexpr std::size_t ZIP_LOCAL_HEADER_SIZE = 30;
 constexpr std::size_t MAX_DISPLAY_ENTRIES = 20;
+constexpr std::size_t MAX_BOOK_PREVIEW = 8;
+constexpr std::size_t MAX_INP_UNCOMPRESSED = 64 * 1024 * 1024;
+constexpr char INP_FIELD_SEPARATOR = '\x04';
 
 std::uint16_t ReadLe16(const std::uint8_t* p) {
     return static_cast<std::uint16_t>(p[0]) |
@@ -51,6 +57,7 @@ std::string BuildStatus() {
     status += INPX_EXT;
     status += " | INP extension: ";
     status += INP_EXT;
+    status += "\nZIP deflate support: zlib";
     return status;
 }
 
@@ -78,12 +85,19 @@ bool EndsWithIgnoreCase(const std::string& value, const std::string& suffix) {
     return true;
 }
 
+struct ZipEntry {
+    std::string name;
+    std::uint16_t method{0};
+    std::uint32_t compressedSize{0};
+    std::uint32_t uncompressedSize{0};
+    std::uint32_t localHeaderOffset{0};
+};
+
 struct ZipIndex {
     bool ok{false};
     std::string error;
     std::uint16_t totalEntries{0};
-    std::uint32_t centralOffset{0};
-    std::vector<std::string> names;
+    std::vector<ZipEntry> entries;
 };
 
 ZipIndex ReadZipIndex(int fd) {
@@ -124,24 +138,24 @@ ZipIndex ReadZipIndex(int fd) {
     const std::uint16_t entriesOnDisk = ReadLe16(footer + 8);
     result.totalEntries = ReadLe16(footer + 10);
     const std::uint32_t centralSize = ReadLe32(footer + 12);
-    result.centralOffset = ReadLe32(footer + 16);
+    const std::uint32_t centralOffset = ReadLe32(footer + 16);
 
     if (diskNumber != 0 || centralDisk != 0 || entriesOnDisk != result.totalEntries) {
         result.error = "Multi-volume ZIP/INPX archives are not supported yet";
         return result;
     }
 
-    const std::uint64_t centralEnd = static_cast<std::uint64_t>(result.centralOffset) + centralSize;
+    const std::uint64_t centralEnd = static_cast<std::uint64_t>(centralOffset) + centralSize;
     if (centralEnd > static_cast<std::uint64_t>(fileSize)) {
         result.error = "Invalid ZIP central directory bounds";
         return result;
     }
 
-    off_t cursor = static_cast<off_t>(result.centralOffset);
+    off_t cursor = static_cast<off_t>(centralOffset);
     std::array<std::uint8_t, ZIP_CENTRAL_HEADER_SIZE> header{};
-    result.names.reserve(std::min<std::size_t>(result.totalEntries, MAX_DISPLAY_ENTRIES));
+    result.entries.reserve(result.totalEntries);
 
-    for (std::uint16_t entry = 0; entry < result.totalEntries; ++entry) {
+    for (std::uint16_t i = 0; i < result.totalEntries; ++i) {
         if (!ReadExactAt(fd, header.data(), header.size(), cursor)) {
             result.error = "Cannot read ZIP central directory entry";
             return result;
@@ -151,24 +165,140 @@ ZipIndex ReadZipIndex(int fd) {
             return result;
         }
 
+        ZipEntry entry;
+        entry.method = ReadLe16(header.data() + 10);
+        entry.compressedSize = ReadLe32(header.data() + 20);
+        entry.uncompressedSize = ReadLe32(header.data() + 24);
         const std::uint16_t nameLength = ReadLe16(header.data() + 28);
         const std::uint16_t extraLength = ReadLe16(header.data() + 30);
         const std::uint16_t commentLength = ReadLe16(header.data() + 32);
+        entry.localHeaderOffset = ReadLe32(header.data() + 42);
 
-        if (nameLength > 0 && result.names.size() < MAX_DISPLAY_ENTRIES) {
-            std::string name(nameLength, '\0');
-            if (!ReadExactAt(fd, name.data(), name.size(), cursor + ZIP_CENTRAL_HEADER_SIZE)) {
-                result.error = "Cannot read ZIP entry name";
-                return result;
-            }
-            result.names.push_back(std::move(name));
+        entry.name.resize(nameLength);
+        if (nameLength > 0 &&
+            !ReadExactAt(fd, entry.name.data(), entry.name.size(), cursor + ZIP_CENTRAL_HEADER_SIZE)) {
+            result.error = "Cannot read ZIP entry name";
+            return result;
         }
 
+        result.entries.push_back(std::move(entry));
         cursor += static_cast<off_t>(ZIP_CENTRAL_HEADER_SIZE) +
                   nameLength + extraLength + commentLength;
     }
 
     result.ok = true;
+    return result;
+}
+
+bool ExtractEntry(int fd, const ZipEntry& entry, std::string& output, std::string& error) {
+    if (entry.uncompressedSize > MAX_INP_UNCOMPRESSED) {
+        error = "INP entry is too large for preview";
+        return false;
+    }
+
+    std::array<std::uint8_t, ZIP_LOCAL_HEADER_SIZE> header{};
+    if (!ReadExactAt(fd, header.data(), header.size(), entry.localHeaderOffset) ||
+        ReadLe32(header.data()) != ZIP_LOCAL_FILE_SIGNATURE) {
+        error = "Cannot read ZIP local header";
+        return false;
+    }
+
+    const std::uint16_t nameLength = ReadLe16(header.data() + 26);
+    const std::uint16_t extraLength = ReadLe16(header.data() + 28);
+    const off_t dataOffset = static_cast<off_t>(entry.localHeaderOffset) +
+                             ZIP_LOCAL_HEADER_SIZE + nameLength + extraLength;
+
+    std::vector<std::uint8_t> compressed(entry.compressedSize);
+    if (!compressed.empty() && !ReadExactAt(fd, compressed.data(), compressed.size(), dataOffset)) {
+        error = "Cannot read compressed INP data";
+        return false;
+    }
+
+    output.assign(entry.uncompressedSize, '\0');
+    if (entry.method == 0) {
+        if (entry.compressedSize != entry.uncompressedSize) {
+            error = "Stored ZIP entry has inconsistent size";
+            return false;
+        }
+        output.assign(reinterpret_cast<const char*>(compressed.data()), compressed.size());
+        return true;
+    }
+
+    if (entry.method != 8) {
+        error = "Unsupported ZIP compression method: " + std::to_string(entry.method);
+        return false;
+    }
+
+    z_stream stream{};
+    stream.next_in = compressed.data();
+    stream.avail_in = static_cast<uInt>(compressed.size());
+    stream.next_out = reinterpret_cast<Bytef*>(output.data());
+    stream.avail_out = static_cast<uInt>(output.size());
+
+    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
+        error = "zlib initialization failed";
+        return false;
+    }
+    const int code = inflate(&stream, Z_FINISH);
+    inflateEnd(&stream);
+
+    if (code != Z_STREAM_END) {
+        error = "zlib failed to decompress INP entry";
+        return false;
+    }
+    output.resize(stream.total_out);
+    return true;
+}
+
+std::vector<std::string_view> SplitFields(std::string_view line) {
+    std::vector<std::string_view> fields;
+    std::size_t start = 0;
+    while (start <= line.size()) {
+        const auto end = line.find(INP_FIELD_SEPARATOR, start);
+        fields.push_back(line.substr(start, end == std::string_view::npos ? line.size() - start : end - start));
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return fields;
+}
+
+std::string PreviewBooks(std::string_view inp) {
+    std::string result;
+    std::size_t cursor = 0;
+    std::size_t shown = 0;
+
+    while (cursor < inp.size() && shown < MAX_BOOK_PREVIEW) {
+        auto lineEnd = inp.find('\n', cursor);
+        if (lineEnd == std::string_view::npos) {
+            lineEnd = inp.size();
+        }
+        auto line = inp.substr(cursor, lineEnd - cursor);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+
+        const auto fields = SplitFields(line);
+        if (fields.size() >= 3) {
+            const auto author = fields[0];
+            const auto title = fields[2];
+            if (!title.empty()) {
+                result += "\n• ";
+                result.append(title.data(), title.size());
+                if (!author.empty()) {
+                    result += " — ";
+                    result.append(author.data(), author.size());
+                }
+                ++shown;
+            }
+        }
+        cursor = lineEnd + 1;
+    }
+
+    if (shown == 0) {
+        return "\nNo recognizable book records found in the first INP file";
+    }
     return result;
 }
 
@@ -215,23 +345,40 @@ Java_ua_flibrary_android_MainActivity_nativeProbeInpx(
         return env->NewStringUTF(output.c_str());
     }
 
+    const ZipEntry* firstInp = nullptr;
     std::size_t inpCount = 0;
-    for (const auto& entryName : index.names) {
-        if (EndsWithIgnoreCase(entryName, INP_EXT)) {
+    for (const auto& entry : index.entries) {
+        if (EndsWithIgnoreCase(entry.name, INP_EXT)) {
             ++inpCount;
+            if (firstInp == nullptr) {
+                firstInp = &entry;
+            }
         }
     }
 
     output += inpxName ? "INPX container detected" : "ZIP container detected (filename is not .inpx)";
     output += "\nEntries: " + std::to_string(index.totalEntries);
-    output += "\n.INP files shown: " + std::to_string(inpCount);
+    output += "\n.INP files: " + std::to_string(inpCount);
     output += "\n\nArchive contents:";
 
-    for (const auto& entryName : index.names) {
-        output += "\n• " + entryName;
+    const auto displayCount = std::min<std::size_t>(index.entries.size(), MAX_DISPLAY_ENTRIES);
+    for (std::size_t i = 0; i < displayCount; ++i) {
+        output += "\n• " + index.entries[i].name;
     }
-    if (index.totalEntries > index.names.size()) {
-        output += "\n… +" + std::to_string(index.totalEntries - index.names.size()) + " more";
+    if (index.entries.size() > displayCount) {
+        output += "\n… +" + std::to_string(index.entries.size() - displayCount) + " more";
+    }
+
+    if (firstInp != nullptr) {
+        std::string inp;
+        std::string error;
+        output += "\n\nFirst INP: " + firstInp->name;
+        if (ExtractEntry(fd, *firstInp, inp, error)) {
+            output += "\nBooks preview:";
+            output += PreviewBooks(inp);
+        } else {
+            output += "\nCannot extract INP: " + error;
+        }
     }
 
     return env->NewStringUTF(output.c_str());
