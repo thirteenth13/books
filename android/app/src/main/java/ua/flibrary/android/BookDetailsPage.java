@@ -13,11 +13,13 @@ import android.widget.TextView;
 
 final class BookDetailsPage {
     interface Action { void run(); }
+    interface ToggleAction { boolean run(); }
 
     private BookDetailsPage() {}
 
-    static void show(MainActivity activity, BookItem book,
-                     Action openAction, Action authorAction, Action seriesAction) {
+    static void show(MainActivity activity, BookItem book, boolean favorite,
+                     Action openAction, Action authorAction, Action seriesAction,
+                     ToggleAction favoriteAction) {
         Dialog dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
 
@@ -75,12 +77,24 @@ final class BookDetailsPage {
             });
         }
 
+        Button favoriteButton = new Button(activity);
+        favoriteButton.setAllCaps(false);
+        favoriteButton.setText(favorite ? "★ В обраному" : "☆ Додати в обране");
+        LinearLayout.LayoutParams favoriteParams = fullWidth();
+        favoriteParams.topMargin = activity.dp(16);
+        favoriteParams.height = activity.dp(48);
+        page.addView(favoriteButton, favoriteParams);
+        favoriteButton.setOnClickListener(v -> {
+            boolean nowFavorite = favoriteAction.run();
+            favoriteButton.setText(nowFavorite ? "★ В обраному" : "☆ Додати в обране");
+        });
+
         LinearLayout meta = new LinearLayout(activity);
         meta.setOrientation(LinearLayout.VERTICAL);
         meta.setPadding(activity.dp(14), activity.dp(12), activity.dp(14), activity.dp(12));
         meta.setBackgroundResource(R.drawable.bg_panel);
         LinearLayout.LayoutParams metaParams = fullWidth();
-        metaParams.topMargin = activity.dp(20);
+        metaParams.topMargin = activity.dp(16);
         page.addView(meta, metaParams);
 
         addMeta(activity, meta, "Жанр", book.genre);
@@ -126,9 +140,7 @@ final class BookDetailsPage {
         }
         dialog.setOnShowListener(ignored -> {
             Window shown = dialog.getWindow();
-            if (shown != null) {
-                shown.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            }
+            if (shown != null) shown.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         });
         dialog.show();
     }
@@ -161,7 +173,6 @@ final class BookDetailsPage {
     }
 
     private static LinearLayout.LayoutParams fullWidth() {
-        return new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 }
