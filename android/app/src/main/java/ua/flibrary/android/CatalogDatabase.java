@@ -128,46 +128,53 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
         }
     }
 
-    public List<BookItem> listBooks(int limit) {
+    public List<BookItem> listBooks(int limit) { return listBooks(limit, 0); }
+
+    public List<BookItem> listBooks(int limit, int offset) {
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books ORDER BY title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{Integer.toString(limit)});
+                "FROM books ORDER BY title COLLATE NOCASE, id LIMIT ? OFFSET ?";
+        return queryBooks(sql, new String[]{Integer.toString(limit), Integer.toString(offset)});
     }
 
-    public List<BookItem> searchBooks(String query, int limit) {
+    public List<BookItem> searchBooks(String query, int limit) { return searchBooks(query, limit, 0); }
+
+    public List<BookItem> searchBooks(String query, int limit, int offset) {
         String needle = "%" + searchKey(query) + "%";
         String sql = "SELECT " + BOOK_COLUMNS +
                 "FROM books WHERE title_key LIKE ? OR author_key LIKE ? OR series_key LIKE ? " +
-                "ORDER BY title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{needle, needle, needle, Integer.toString(limit)});
+                "ORDER BY title COLLATE NOCASE, id LIMIT ? OFFSET ?";
+        return queryBooks(sql, new String[]{needle, needle, needle,
+                Integer.toString(limit), Integer.toString(offset)});
     }
 
-    public List<BookItem> booksByAuthor(String author, int limit) {
+    public List<BookItem> booksByAuthor(String author, int limit) { return booksByAuthor(author, limit, 0); }
+
+    public List<BookItem> booksByAuthor(String author, int limit, int offset) {
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books WHERE author_key = ? ORDER BY title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{searchKey(author), Integer.toString(limit)});
+                "FROM books WHERE author_key = ? ORDER BY title COLLATE NOCASE, id LIMIT ? OFFSET ?";
+        return queryBooks(sql, new String[]{searchKey(author), Integer.toString(limit), Integer.toString(offset)});
     }
 
-    public List<BookItem> booksBySeries(String series, int limit) {
+    public List<BookItem> booksBySeries(String series, int limit) { return booksBySeries(series, limit, 0); }
+
+    public List<BookItem> booksBySeries(String series, int limit, int offset) {
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books WHERE series_key = ? ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{searchKey(series), Integer.toString(limit)});
+                "FROM books WHERE series_key = ? ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE, id LIMIT ? OFFSET ?";
+        return queryBooks(sql, new String[]{searchKey(series), Integer.toString(limit), Integer.toString(offset)});
     }
 
-    public List<String> listAuthors(int limit) {
-        return queryNames("author", limit);
-    }
+    public List<String> listAuthors(int limit) { return listAuthors(limit, 0); }
+    public List<String> listAuthors(int limit, int offset) { return queryNames("author", limit, offset); }
+    public List<String> listSeries(int limit) { return listSeries(limit, 0); }
+    public List<String> listSeries(int limit, int offset) { return queryNames("series", limit, offset); }
 
-    public List<String> listSeries(int limit) {
-        return queryNames("series", limit);
-    }
-
-    private List<String> queryNames(String column, int limit) {
+    private List<String> queryNames(String column, int limit, int offset) {
         ArrayList<String> result = new ArrayList<>();
         String sql = "SELECT " + column + ", COUNT(*) AS n FROM books " +
                 "WHERE " + column + " IS NOT NULL AND " + column + " <> '' " +
-                "GROUP BY " + column + " ORDER BY " + column + " COLLATE NOCASE LIMIT ?";
-        try (Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{Integer.toString(limit)})) {
+                "GROUP BY " + column + " ORDER BY " + column + " COLLATE NOCASE LIMIT ? OFFSET ?";
+        try (Cursor cursor = getReadableDatabase().rawQuery(sql,
+                new String[]{Integer.toString(limit), Integer.toString(offset)})) {
             while (cursor.moveToNext()) {
                 result.add(cursor.getString(0) + " (" + cursor.getLong(1) + ")");
             }
