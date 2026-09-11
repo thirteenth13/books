@@ -43,21 +43,28 @@
         </LinearLayout>
 
         <Button
-            android:id="@+id/import_button"
-            android:layout_width="wrap_content"
+            android:id="@+id/settings_button"
+            android:layout_width="48dp"
             android:layout_height="42dp"
             android:minWidth="0dp"
-            android:text="INPX"
-            android:textAllCaps="false" />
+            android:text="⋮"
+            android:textSize="22sp"
+            android:textAllCaps="false"
+            android:contentDescription="Налаштування бібліотеки" />
+
+        <Button
+            android:id="@+id/import_button"
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:visibility="gone"
+            android:text="INPX" />
 
         <Button
             android:id="@+id/folder_button"
-            android:layout_width="wrap_content"
-            android:layout_height="42dp"
-            android:layout_marginStart="6dp"
-            android:minWidth="0dp"
-            android:text="Папка"
-            android:textAllCaps="false" />
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:visibility="gone"
+            android:text="Папка" />
     </LinearLayout>
 
     <LinearLayout
