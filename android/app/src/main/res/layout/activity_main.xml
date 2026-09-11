@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/main_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
@@ -41,16 +42,6 @@
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
         </LinearLayout>
-
-        <Button
-            android:id="@+id/settings_button"
-            android:layout_width="48dp"
-            android:layout_height="42dp"
-            android:minWidth="0dp"
-            android:text="⋮"
-            android:textSize="22sp"
-            android:textAllCaps="false"
-            android:contentDescription="Налаштування бібліотеки" />
 
         <Button
             android:id="@+id/import_button"
