@@ -378,23 +378,14 @@ public final class MainActivity extends Activity {
     }
 
     private void showBookDetails(BookItem book) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(book.title)
-                .setMessage(book.details())
-                .setPositiveButton("Відкрити", (dialog, which) -> openBook(book));
-        if (!book.author.isEmpty()) {
-            builder.setNeutralButton("Автор", (dialog, which) ->
-                    startBookPaging(book.author,
-                            (limit, offset) -> catalogDatabase.booksByAuthor(book.author, limit, offset)));
-        }
-        if (!book.series.isEmpty()) {
-            builder.setNegativeButton("Серія", (dialog, which) ->
-                    startBookPaging(book.series,
-                            (limit, offset) -> catalogDatabase.booksBySeries(book.series, limit, offset)));
-        } else {
-            builder.setNegativeButton("Закрити", null);
-        }
-        builder.show();
+        BookDetailsPage.show(
+                this,
+                book,
+                () -> openBook(book),
+                () -> startBookPaging(book.author,
+                        (limit, offset) -> catalogDatabase.booksByAuthor(book.author, limit, offset)),
+                () -> startBookPaging(book.series,
+                        (limit, offset) -> catalogDatabase.booksBySeries(book.series, limit, offset)));
     }
 
     private Uri getLibraryTreeUri() {
