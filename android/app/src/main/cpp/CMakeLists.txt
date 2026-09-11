@@ -23,3 +23,6 @@ target_include_directories(flibrary_android PRIVATE
 target_compile_definitions(flibrary_android PRIVATE
     FLIBRARY_ANDROID=1
 )
+
+find_library(ZLIB_LIB z REQUIRED)
+target_link_libraries(flibrary_android PRIVATE ${ZLIB_LIB})
