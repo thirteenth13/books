@@ -23,6 +23,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -336,23 +337,64 @@ public final class MainActivity extends Activity {
     private DocumentFile findArchive(BookItem book) {
         Uri treeUri = getLibraryTreeUri();
         if (treeUri == null || book.folder.isEmpty()) return null;
-        DocumentFile current = DocumentFile.fromTreeUri(this, treeUri);
-        if (current == null) return null;
+        DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
+        if (root == null) return null;
 
-        String path = book.folder.replace('\\', '/');
-        while (path.startsWith("/")) path = path.substring(1);
+        DocumentFile archive = findArchiveFrom(root, book.folder);
+        if (archive != null) return archive;
+
+        DocumentFile archives = findChildIgnoreCase(root, "archives");
+        if (archives != null && archives.isDirectory()) {
+            archive = findArchiveFrom(archives, book.folder);
+            if (archive != null) return archive;
+        }
+
+        String normalized = normalizeArchivePath(book.folder);
+        int slash = normalized.lastIndexOf('/');
+        String baseName = slash >= 0 ? normalized.substring(slash + 1) : normalized;
+        archive = findArchiveFrom(root, baseName);
+        if (archive != null) return archive;
+        return archives == null ? null : findArchiveFrom(archives, baseName);
+    }
+
+    private DocumentFile findArchiveFrom(DocumentFile root, String rawPath) {
+        String path = normalizeArchivePath(rawPath);
+        if (path.isEmpty()) return null;
+
+        DocumentFile current = root;
         String[] parts = path.split("/");
         for (int i = 0; i < parts.length; ++i) {
             String part = parts[i];
             if (part.isEmpty() || ".".equals(part)) continue;
-            DocumentFile next = current.findFile(part);
-            if (next == null && i == parts.length - 1 && !part.toLowerCase().endsWith(".zip")) {
-                next = current.findFile(part + ".zip");
+            DocumentFile next = findChildIgnoreCase(current, part);
+            if (next == null && i == parts.length - 1 &&
+                    !part.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                next = findChildIgnoreCase(current, part + ".zip");
             }
             if (next == null) return null;
             current = next;
         }
-        return current != null && current.isFile() ? current : null;
+        return current.isFile() ? current : null;
+    }
+
+    private DocumentFile findChildIgnoreCase(DocumentFile parent, String name) {
+        DocumentFile direct = parent.findFile(name);
+        if (direct != null) return direct;
+        for (DocumentFile child : parent.listFiles()) {
+            String childName = child.getName();
+            if (childName != null && childName.equalsIgnoreCase(name)) return child;
+        }
+        return null;
+    }
+
+    private String normalizeArchivePath(String value) {
+        String path = value == null ? "" : value.trim().replace('\\', '/');
+        while (path.startsWith("/")) path = path.substring(1);
+        while (path.startsWith("./")) path = path.substring(2);
+        if (path.toLowerCase(Locale.ROOT).startsWith("archives/")) {
+            path = path.substring("archives/".length());
+        }
+        return path;
     }
 
     private void openBook(BookItem book) {
@@ -369,7 +411,7 @@ public final class MainActivity extends Activity {
         DocumentFile archive = findArchive(book);
         if (archive == null) {
             showError("Archive not found: " + book.folder +
-                    "\nSelect the folder that contains the FLibrary archives.");
+                    "\nSelect the library root or the folder that contains FLibrary archives.");
             return;
         }
 
@@ -403,7 +445,8 @@ public final class MainActivity extends Activity {
             startActivity(Intent.createChooser(view, "Open book"));
             updateStatus();
         } catch (ActivityNotFoundException e) {
-            showError("No application is installed that can open " + book.extension.toUpperCase() + " files.");
+            showError("No application is installed that can open " +
+                    book.extension.toUpperCase(Locale.ROOT) + " files.");
         } catch (IOException | RuntimeException e) {
             showError("Open failed: " + e.getMessage());
         }
@@ -415,7 +458,7 @@ public final class MainActivity extends Activity {
     }
 
     private String mimeType(String extension) {
-        String ext = extension == null ? "" : extension.toLowerCase();
+        String ext = extension == null ? "" : extension.toLowerCase(Locale.ROOT);
         switch (ext) {
             case "epub": return "application/epub+zip";
             case "fb2": return "application/x-fictionbook+xml";
