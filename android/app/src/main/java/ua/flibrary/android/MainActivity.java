@@ -7,8 +7,12 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
@@ -32,6 +36,7 @@ public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
     private static final int OPEN_LIBRARY_FOLDER_REQUEST = 1002;
     private static final int PAGE_SIZE = 100;
+    private static final long SEARCH_DEBOUNCE_MS = 400;
     private static final String PREFS = "flibrary";
     private static final String PREF_LIBRARY_TREE = "library_tree";
 
@@ -58,6 +63,16 @@ public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService queryWorker = Executors.newSingleThreadExecutor();
     private final AtomicLong queryGeneration = new AtomicLong();
+    private final Handler searchHandler = new Handler(Looper.getMainLooper());
+    private final Runnable liveSearchRunnable = () -> {
+        if (searchInput == null) return;
+        String query = searchInput.getText().toString().trim();
+        if (query.isEmpty()) {
+            startBookPaging("Книги", catalogDatabase::listBooks);
+        } else if (query.length() >= 2) {
+            runSearch();
+        }
+    };
 
     private interface BookPageSource { List<BookItem> load(int limit, int offset); }
     private interface NamePageSource { List<String> load(int limit, int offset); }
@@ -100,13 +115,28 @@ public final class MainActivity extends Activity {
         booksButton.setOnClickListener(v -> startBookPaging("Книги", catalogDatabase::listBooks));
         authorsButton.setOnClickListener(v -> startNamePaging(true));
         seriesButton.setOnClickListener(v -> startNamePaging(false));
-        searchButton.setOnClickListener(v -> runSearch());
+        searchButton.setOnClickListener(v -> {
+            searchHandler.removeCallbacks(liveSearchRunnable);
+            runSearch();
+        });
         searchInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
+                searchHandler.removeCallbacks(liveSearchRunnable);
                 runSearch();
                 return true;
             }
             return false;
+        });
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                searchHandler.removeCallbacks(liveSearchRunnable);
+                String value = s == null ? "" : s.toString().trim();
+                if (value.isEmpty() || value.length() >= 2) {
+                    searchHandler.postDelayed(liveSearchRunnable, SEARCH_DEBOUNCE_MS);
+                }
+            }
+            @Override public void afterTextChanged(Editable s) {}
         });
 
         updateStatus();
@@ -231,6 +261,7 @@ public final class MainActivity extends Activity {
         resultsHeading.setText(heading + "  •  …");
 
         queryWorker.execute(() -> {
+            if (generation != queryGeneration.get()) return;
             try {
                 List<BookItem> page = source.load(PAGE_SIZE, 0);
                 runOnUiThread(() -> {
@@ -259,6 +290,7 @@ public final class MainActivity extends Activity {
         NamePageSource source = namePageSource;
 
         queryWorker.execute(() -> {
+            if (generation != queryGeneration.get()) return;
             try {
                 List<String> page = source.load(PAGE_SIZE, 0);
                 runOnUiThread(() -> {
@@ -285,6 +317,7 @@ public final class MainActivity extends Activity {
 
         pageLoading = true;
         queryWorker.execute(() -> {
+            if (generation != queryGeneration.get()) return;
             try {
                 if (books != null) {
                     List<BookItem> page = books.load(PAGE_SIZE, offset);
@@ -554,6 +587,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        searchHandler.removeCallbacks(liveSearchRunnable);
         queryGeneration.incrementAndGet();
         queryWorker.shutdownNow();
         worker.shutdownNow();
