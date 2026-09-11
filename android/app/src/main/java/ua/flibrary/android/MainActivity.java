@@ -8,12 +8,14 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.IOException;
+import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
@@ -24,38 +26,53 @@ public final class MainActivity extends Activity {
 
     private native String nativeStatus();
     private native String nativeProbeInpx(int fd, String displayName);
+    private native String nativeImportInpx(int fd, CatalogDatabase database);
 
     private TextView status;
+    private EditText searchInput;
+    private CatalogDatabase catalogDatabase;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        catalogDatabase = new CatalogDatabase(this);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        int padding = (int) (24 * getResources().getDisplayMetrics().density);
-        root.setPadding(padding, padding, padding, padding);
+        int padding = (int) (20 * getResources().getDisplayMetrics().density);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(padding, padding, padding, padding);
 
         TextView title = new TextView(this);
         title.setText("FLibrary Android");
         title.setTextSize(28);
         title.setGravity(Gravity.CENTER);
+        content.addView(title);
 
         status = new TextView(this);
-        status.setText(nativeStatus());
-        status.setTextSize(16);
-        status.setGravity(Gravity.CENTER);
+        status.setText(nativeStatus() + "\nStored books: " + catalogDatabase.getBookCount());
+        status.setTextSize(15);
         status.setPadding(0, padding, 0, padding);
+        content.addView(status);
 
         Button openInpx = new Button(this);
-        openInpx.setText("Open INPX");
+        openInpx.setText("Import INPX");
         openInpx.setOnClickListener(v -> openInpxDocument());
+        content.addView(openInpx);
 
-        root.addView(title);
-        root.addView(status);
-        root.addView(openInpx);
-        setContentView(root);
+        searchInput = new EditText(this);
+        searchInput.setHint("Title, author or series");
+        searchInput.setSingleLine(true);
+        content.addView(searchInput);
+
+        Button search = new Button(this);
+        search.setText("Search catalog");
+        search.setOnClickListener(v -> runSearch());
+        content.addView(search);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.addView(content);
+        setContentView(scrollView);
     }
 
     private void openInpxDocument() {
@@ -83,19 +100,58 @@ public final class MainActivity extends Activity {
         try {
             getContentResolver().takePersistableUriPermission(uri, flags);
         } catch (SecurityException ignored) {
-            // Some document providers grant access only for the current session.
+            // Some providers grant access only for the current session.
         }
 
         String displayName = queryDisplayName(uri);
+        boolean transactionStarted = false;
+        boolean success = false;
         try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
             if (pfd == null) {
                 status.setText("Cannot open selected document");
                 return;
             }
-            status.setText(nativeProbeInpx(pfd.getFd(), displayName));
-        } catch (IOException | SecurityException e) {
-            status.setText("Open failed: " + e.getMessage());
+
+            status.setText("Importing " + displayName + "…");
+            catalogDatabase.beginNativeImport();
+            transactionStarted = true;
+
+            String result = nativeImportInpx(pfd.getFd(), catalogDatabase);
+            success = result != null && result.startsWith("OK:");
+            status.setText((result == null ? "Native import failed" : result) +
+                    "\nStored books: " + (success ? catalogDatabase.getBookCount() : 0));
+        } catch (IOException | SecurityException | RuntimeException e) {
+            status.setText("Import failed: " + e.getMessage());
+        } finally {
+            if (transactionStarted) {
+                try {
+                    catalogDatabase.finishNativeImport(success);
+                } catch (RuntimeException e) {
+                    status.setText("Database finalize failed: " + e.getMessage());
+                }
+            }
+            if (success) {
+                status.append("\nStored books: " + catalogDatabase.getBookCount());
+            }
         }
+    }
+
+    private void runSearch() {
+        String query = searchInput.getText().toString().trim();
+        if (query.isEmpty()) {
+            status.setText("Enter a title, author or series.\nStored books: " + catalogDatabase.getBookCount());
+            return;
+        }
+
+        List<String> results = catalogDatabase.search(query, 50);
+        StringBuilder text = new StringBuilder();
+        text.append("Search: ").append(query)
+                .append("\nResults: ").append(results.size())
+                .append("\nStored books: ").append(catalogDatabase.getBookCount());
+        for (String result : results) {
+            text.append("\n\n• ").append(result);
+        }
+        status.setText(text.toString());
     }
 
     private String queryDisplayName(Uri uri) {
@@ -116,5 +172,13 @@ public final class MainActivity extends Activity {
             }
         }
         return uri.getLastPathSegment() == null ? "document" : uri.getLastPathSegment();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (catalogDatabase != null) {
+            catalogDatabase.close();
+        }
+        super.onDestroy();
     }
 }
