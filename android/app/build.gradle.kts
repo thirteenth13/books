@@ -42,4 +42,5 @@ android {
 dependencies {
     implementation("androidx.core:core:1.15.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
 }
