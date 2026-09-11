@@ -85,25 +85,74 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
         }
     }
 
-    public List<String> search(String query, int limit) {
-        ArrayList<String> result = new ArrayList<>();
+    public List<BookItem> listBooks(int limit) {
+        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+                "FROM books ORDER BY title COLLATE NOCASE LIMIT ?";
+        return queryBooks(sql, new String[]{Integer.toString(limit)});
+    }
+
+    public List<BookItem> searchBooks(String query, int limit) {
         String needle = "%" + query.trim() + "%";
-        String sql = "SELECT title, author, series, extension FROM books " +
-                "WHERE title LIKE ? COLLATE NOCASE OR author LIKE ? COLLATE NOCASE OR series LIKE ? COLLATE NOCASE " +
+        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+                "FROM books WHERE title LIKE ? COLLATE NOCASE OR author LIKE ? COLLATE NOCASE OR series LIKE ? COLLATE NOCASE " +
                 "ORDER BY title COLLATE NOCASE LIMIT ?";
-        String[] args = {needle, needle, needle, Integer.toString(limit)};
+        return queryBooks(sql, new String[]{needle, needle, needle, Integer.toString(limit)});
+    }
+
+    public List<BookItem> booksByAuthor(String author, int limit) {
+        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+                "FROM books WHERE author = ? COLLATE NOCASE ORDER BY title COLLATE NOCASE LIMIT ?";
+        return queryBooks(sql, new String[]{author, Integer.toString(limit)});
+    }
+
+    public List<BookItem> booksBySeries(String series, int limit) {
+        String sql = "SELECT id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id " +
+                "FROM books WHERE series = ? COLLATE NOCASE ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE LIMIT ?";
+        return queryBooks(sql, new String[]{series, Integer.toString(limit)});
+    }
+
+    public List<String> listAuthors(int limit) {
+        return queryNames("author", limit);
+    }
+
+    public List<String> listSeries(int limit) {
+        return queryNames("series", limit);
+    }
+
+    private List<String> queryNames(String column, int limit) {
+        ArrayList<String> result = new ArrayList<>();
+        String sql = "SELECT " + column + ", COUNT(*) AS n FROM books " +
+                "WHERE " + column + " IS NOT NULL AND " + column + " <> '' " +
+                "GROUP BY " + column + " ORDER BY " + column + " COLLATE NOCASE LIMIT ?";
+        try (Cursor cursor = getReadableDatabase().rawQuery(sql, new String[]{Integer.toString(limit)})) {
+            while (cursor.moveToNext()) {
+                result.add(cursor.getString(0) + " (" + cursor.getLong(1) + ")");
+            }
+        }
+        return result;
+    }
+
+    private List<BookItem> queryBooks(String sql, String[] args) {
+        ArrayList<BookItem> result = new ArrayList<>();
         try (Cursor cursor = getReadableDatabase().rawQuery(sql, args)) {
             while (cursor.moveToNext()) {
-                String title = cursor.getString(0);
-                String author = cursor.getString(1);
-                String series = cursor.getString(2);
-                String extension = cursor.getString(3);
-                StringBuilder line = new StringBuilder(title == null ? "" : title);
-                if (author != null && !author.isEmpty()) line.append(" — ").append(author);
-                if (series != null && !series.isEmpty()) line.append("\n  ").append(series);
-                if (extension != null && !extension.isEmpty()) line.append(" [").append(extension).append(']');
-                result.add(line.toString());
+                result.add(new BookItem(
+                        cursor.getLong(0), cursor.getString(1), cursor.getString(2), cursor.getString(3),
+                        cursor.getString(4), cursor.getString(5), cursor.getString(6), cursor.getString(7),
+                        cursor.getString(8), cursor.getString(9), cursor.getString(10)));
             }
+        }
+        return result;
+    }
+
+    public List<String> search(String query, int limit) {
+        ArrayList<String> result = new ArrayList<>();
+        for (BookItem book : searchBooks(query, limit)) {
+            StringBuilder line = new StringBuilder(book.title);
+            if (!book.author.isEmpty()) line.append(" — ").append(book.author);
+            if (!book.series.isEmpty()) line.append("\n  ").append(book.series);
+            if (!book.extension.isEmpty()) line.append(" [").append(book.extension).append(']');
+            result.add(line.toString());
         }
         return result;
     }
