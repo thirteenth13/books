@@ -120,7 +120,7 @@ public final class MainActivity extends Activity {
             success = result != null && result.startsWith("OK:");
             status.setText((result == null ? "Native import failed" : result) +
                     "\nStored books: " + (success ? catalogDatabase.getBookCount() : 0));
-        } catch (IOException | SecurityException | RuntimeException e) {
+        } catch (IOException | RuntimeException e) {
             status.setText("Import failed: " + e.getMessage());
         } finally {
             if (transactionStarted) {
