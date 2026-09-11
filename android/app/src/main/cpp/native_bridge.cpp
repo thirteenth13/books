@@ -28,6 +28,7 @@ constexpr std::size_t MAX_INP_UNCOMPRESSED = 64 * 1024 * 1024;
 constexpr std::size_t MAX_CATALOG_BOOKS = 2'000'000;
 constexpr std::size_t IMPORT_BATCH_SIZE = 500;
 constexpr char SQLITE_FIELD_SEPARATOR = '\x1f';
+constexpr std::string_view STRUCTURE_INFO_NAME = "structure.info";
 
 std::uint16_t ReadLe16(const std::uint8_t* p) {
     return static_cast<std::uint16_t>(p[0]) |
@@ -60,7 +61,7 @@ std::string BuildStatus() {
     status += " | INP extension: ";
     status += INP_EXT;
     status += "\nZIP deflate support: zlib";
-    status += "\nTyped INPX book model: 17 fields";
+    status += "\nDynamic structure.info field layout enabled";
     status += "\nFull multi-INP catalog scan enabled";
     status += "\nSQLite batch import bridge enabled";
     return status;
@@ -80,6 +81,15 @@ bool EndsWithIgnoreCase(const std::string& value, const std::string& suffix) {
         const auto a = static_cast<unsigned char>(value[offset + i]);
         const auto b = static_cast<unsigned char>(suffix[i]);
         if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
+}
+
+bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) return false;
     }
     return true;
 }
@@ -167,7 +177,7 @@ ZipIndex ReadZipIndex(int fd) {
 }
 
 bool ExtractEntry(int fd, const ZipEntry& entry, std::string& output, std::string& error) {
-    if (entry.uncompressedSize > MAX_INP_UNCOMPRESSED) { error = "INP entry is too large"; return false; }
+    if (entry.uncompressedSize > MAX_INP_UNCOMPRESSED) { error = "ZIP entry is too large"; return false; }
     std::array<std::uint8_t, ZIP_LOCAL_HEADER_SIZE> header{};
     if (!ReadExactAt(fd, header.data(), header.size(), entry.localHeaderOffset) || ReadLe32(header.data()) != ZIP_LOCAL_FILE_SIGNATURE) {
         error = "Cannot read ZIP local header"; return false;
@@ -176,7 +186,7 @@ bool ExtractEntry(int fd, const ZipEntry& entry, std::string& output, std::strin
     const std::uint16_t extraLength = ReadLe16(header.data() + 28);
     const off_t dataOffset = static_cast<off_t>(entry.localHeaderOffset) + ZIP_LOCAL_HEADER_SIZE + nameLength + extraLength;
     std::vector<std::uint8_t> compressed(entry.compressedSize);
-    if (!compressed.empty() && !ReadExactAt(fd, compressed.data(), compressed.size(), dataOffset)) { error = "Cannot read compressed INP data"; return false; }
+    if (!compressed.empty() && !ReadExactAt(fd, compressed.data(), compressed.size(), dataOffset)) { error = "Cannot read compressed ZIP data"; return false; }
 
     output.assign(entry.uncompressedSize, '\0');
     if (entry.method == 0) {
@@ -194,9 +204,85 @@ bool ExtractEntry(int fd, const ZipEntry& entry, std::string& output, std::strin
     if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) { error = "zlib initialization failed"; return false; }
     const int code = inflate(&stream, Z_FINISH);
     inflateEnd(&stream);
-    if (code != Z_STREAM_END) { error = "zlib failed to decompress INP entry"; return false; }
+    if (code != Z_STREAM_END) { error = "zlib failed to decompress ZIP entry"; return false; }
     output.resize(stream.total_out);
     return true;
+}
+
+std::string TrimAscii(std::string_view value) {
+    std::size_t start = 0;
+    std::size_t end = value.size();
+    while (start < end && std::isspace(static_cast<unsigned char>(value[start]))) ++start;
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+    return std::string(value.substr(start, end - start));
+}
+
+std::string UpperAscii(std::string value) {
+    for (char& c : value) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return value;
+}
+
+bool MapFieldName(std::string_view raw, std::size_t index, flibrary::android::FieldLayout& layout) {
+    const std::string name = UpperAscii(TrimAscii(raw));
+    using flibrary::android::BookField;
+    if (name == "AUTHOR") layout.Set(BookField::Author, index);
+    else if (name == "GENRE") layout.Set(BookField::Genre, index);
+    else if (name == "TITLE") layout.Set(BookField::Title, index);
+    else if (name == "SERIES") layout.Set(BookField::Series, index);
+    else if (name == "SERNO") layout.Set(BookField::SeriesNumber, index);
+    else if (name == "FILE") layout.Set(BookField::File, index);
+    else if (name == "SIZE") layout.Set(BookField::Size, index);
+    else if (name == "LIBID") layout.Set(BookField::LibraryId, index);
+    else if (name == "DEL") layout.Set(BookField::Deleted, index);
+    else if (name == "EXT") layout.Set(BookField::Extension, index);
+    else if (name == "DATE") layout.Set(BookField::Date, index);
+    else if (name == "FOLDER") layout.Set(BookField::Folder, index);
+    else if (name == "LANG") layout.Set(BookField::Language, index);
+    else if (name == "LIBRATE") layout.Set(BookField::LibraryRate, index);
+    else if (name == "KEYWORDS") layout.Set(BookField::Keywords, index);
+    else if (name == "YEAR") layout.Set(BookField::Year, index);
+    else if (name == "SOURCELIB") layout.Set(BookField::SourceLibrary, index);
+    else return false;
+    return true;
+}
+
+flibrary::android::FieldLayout ReadFieldLayout(int fd, const ZipIndex& index, bool* usedStructure = nullptr) {
+    flibrary::android::FieldLayout layout;
+    if (usedStructure) *usedStructure = false;
+
+    const ZipEntry* structureEntry = nullptr;
+    for (const auto& entry : index.entries) {
+        const auto slash = entry.name.find_last_of("/\\");
+        const std::string_view base = slash == std::string::npos
+                ? std::string_view(entry.name)
+                : std::string_view(entry.name).substr(slash + 1);
+        if (EqualsIgnoreCase(base, STRUCTURE_INFO_NAME)) { structureEntry = &entry; break; }
+    }
+    if (structureEntry == nullptr) return layout;
+
+    std::string structure;
+    std::string error;
+    if (!ExtractEntry(fd, *structureEntry, structure, error)) return layout;
+
+    flibrary::android::FieldLayout parsed;
+    parsed.Clear();
+    std::size_t fieldIndex = 0;
+    std::size_t start = 0;
+    while (start <= structure.size()) {
+        const auto end = structure.find(';', start);
+        const std::string_view token(structure.data() + start,
+                (end == std::string::npos ? structure.size() : end) - start);
+        if (!TrimAscii(token).empty()) {
+            MapFieldName(token, fieldIndex, parsed);
+            ++fieldIndex;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+
+    if (parsed.Get(flibrary::android::BookField::Title) == flibrary::android::kMissingField) return layout;
+    if (usedStructure) *usedStructure = true;
+    return parsed;
 }
 
 struct CatalogSummary {
@@ -210,7 +296,7 @@ struct CatalogSummary {
     std::vector<std::string> errors;
 };
 
-void ParseInp(std::string_view inp, CatalogSummary& catalog) {
+void ParseInp(std::string_view inp, CatalogSummary& catalog, const flibrary::android::FieldLayout& layout) {
     std::size_t cursor = 0;
     while (cursor < inp.size() && catalog.books < MAX_CATALOG_BOOKS) {
         auto lineEnd = inp.find('\n', cursor);
@@ -218,7 +304,7 @@ void ParseInp(std::string_view inp, CatalogSummary& catalog) {
         auto line = inp.substr(cursor, lineEnd - cursor);
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         flibrary::android::BookRecord book;
-        if (flibrary::android::ParseBookRecord(line, book)) {
+        if (flibrary::android::ParseBookRecord(line, book, layout)) {
             ++catalog.books;
             if (!book.author.empty()) catalog.authors.insert(book.author);
             if (!book.series.empty()) catalog.series.insert(book.series);
@@ -229,7 +315,7 @@ void ParseInp(std::string_view inp, CatalogSummary& catalog) {
     }
 }
 
-CatalogSummary ParseCatalog(int fd, const ZipIndex& index) {
+CatalogSummary ParseCatalog(int fd, const ZipIndex& index, const flibrary::android::FieldLayout& layout) {
     CatalogSummary catalog;
     for (const auto& entry : index.entries) {
         if (!EndsWithIgnoreCase(entry.name, INP_EXT)) continue;
@@ -241,7 +327,7 @@ CatalogSummary ParseCatalog(int fd, const ZipIndex& index) {
             continue;
         }
         ++catalog.inpParsed;
-        ParseInp(inp, catalog);
+        ParseInp(inp, catalog, layout);
         if (catalog.books >= MAX_CATALOG_BOOKS) break;
     }
     return catalog;
@@ -303,6 +389,9 @@ std::string ImportCatalogToDatabase(JNIEnv* env, int fd, jobject database) {
     const auto index = ReadZipIndex(fd);
     if (!index.ok) return "ERROR: " + index.error;
 
+    bool usedStructure = false;
+    const auto layout = ReadFieldLayout(fd, index, &usedStructure);
+
     jclass dbClass = env->GetObjectClass(database);
     if (dbClass == nullptr) return "ERROR: cannot access CatalogDatabase";
     jmethodID insertMethod = env->GetMethodID(dbClass, "insertNativeBatch", "([Ljava/lang/String;)V");
@@ -328,7 +417,7 @@ std::string ImportCatalogToDatabase(JNIEnv* env, int fd, jobject database) {
             std::string_view line(inp.data() + cursor, lineEnd - cursor);
             if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
             flibrary::android::BookRecord book;
-            if (flibrary::android::ParseBookRecord(line, book)) {
+            if (flibrary::android::ParseBookRecord(line, book, layout)) {
                 batch.push_back(EncodeBookRow(book));
                 ++imported;
                 if (batch.size() >= IMPORT_BATCH_SIZE && !FlushImportBatch(env, database, insertMethod, batch)) {
@@ -342,6 +431,7 @@ std::string ImportCatalogToDatabase(JNIEnv* env, int fd, jobject database) {
 
     if (!FlushImportBatch(env, database, insertMethod, batch)) return "ERROR: SQLite final batch insert failed";
     return "OK: imported " + std::to_string(imported) + " books from " + std::to_string(inpParsed) + " INP files" +
+           (usedStructure ? " using structure.info" : " using default field layout") +
            (inpFailed ? " (failed INP: " + std::to_string(inpFailed) + ")" : "");
 }
 
@@ -372,16 +462,19 @@ Java_ua_flibrary_android_MainActivity_nativeProbeInpx(JNIEnv* env, jobject, jint
     const auto index = ReadZipIndex(fd);
     if (!index.ok) { output += "ZIP detected, but index read failed: " + index.error; return env->NewStringUTF(output.c_str()); }
 
+    bool usedStructure = false;
+    const auto layout = ReadFieldLayout(fd, index, &usedStructure);
     std::size_t inpCount = 0;
     for (const auto& entry : index.entries) if (EndsWithIgnoreCase(entry.name, INP_EXT)) ++inpCount;
     output += inpxName ? "INPX container detected" : "ZIP container detected (filename is not .inpx)";
     output += "\nEntries: " + std::to_string(index.totalEntries);
     output += "\n.INP files: " + std::to_string(inpCount);
+    output += usedStructure ? "\nField layout: structure.info" : "\nField layout: default";
     output += "\n\nArchive contents:";
     const auto displayCount = std::min<std::size_t>(index.entries.size(), MAX_DISPLAY_ENTRIES);
     for (std::size_t i = 0; i < displayCount; ++i) output += "\n• " + index.entries[i].name;
     if (index.entries.size() > displayCount) output += "\n… +" + std::to_string(index.entries.size() - displayCount) + " more";
-    if (inpCount > 0) output += CatalogText(ParseCatalog(fd, index));
+    if (inpCount > 0) output += CatalogText(ParseCatalog(fd, index, layout));
     return env->NewStringUTF(output.c_str());
 }
 
