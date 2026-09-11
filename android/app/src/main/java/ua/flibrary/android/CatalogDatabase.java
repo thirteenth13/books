@@ -6,12 +6,14 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public final class CatalogDatabase extends SQLiteOpenHelper {
     private static final String DB_NAME = "flibrary.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     private static final char FIELD_SEPARATOR = '\u001f';
     private static final String BOOK_COLUMNS =
             "id, author, genre, title, series, series_no, file_name, extension, language, book_year, library_id, folder ";
@@ -27,17 +29,53 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
                 "author TEXT, genre TEXT, title TEXT NOT NULL, series TEXT, series_no TEXT," +
                 "file_name TEXT, file_size TEXT, library_id TEXT, deleted_flag TEXT," +
                 "extension TEXT, book_date TEXT, folder TEXT, language TEXT, library_rate TEXT," +
-                "keywords TEXT, book_year TEXT, source_library TEXT)");
-        db.execSQL("CREATE INDEX idx_books_title ON books(title COLLATE NOCASE)");
-        db.execSQL("CREATE INDEX idx_books_author ON books(author COLLATE NOCASE)");
-        db.execSQL("CREATE INDEX idx_books_series ON books(series COLLATE NOCASE)");
-        db.execSQL("CREATE INDEX idx_books_library_id ON books(library_id)");
+                "keywords TEXT, book_year TEXT, source_library TEXT," +
+                "title_key TEXT, author_key TEXT, series_key TEXT)");
+        createIndexes(db);
+    }
+
+    private void createIndexes(SQLiteDatabase db) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title COLLATE NOCASE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_author ON books(author COLLATE NOCASE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_series ON books(series COLLATE NOCASE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_library_id ON books(library_id)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_title_key ON books(title_key)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_author_key ON books(author_key)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_series_key ON books(series_key)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE books ADD COLUMN title_key TEXT");
+            db.execSQL("ALTER TABLE books ADD COLUMN author_key TEXT");
+            db.execSQL("ALTER TABLE books ADD COLUMN series_key TEXT");
+            createIndexes(db);
+            backfillSearchKeys(db);
+            return;
+        }
         db.execSQL("DROP TABLE IF EXISTS books");
         onCreate(db);
+    }
+
+    private void backfillSearchKeys(SQLiteDatabase db) {
+        try (Cursor cursor = db.rawQuery("SELECT id, title, author, series FROM books", null)) {
+            while (cursor.moveToNext()) {
+                ContentValues values = new ContentValues(3);
+                values.put("title_key", searchKey(cursor.getString(1)));
+                values.put("author_key", searchKey(cursor.getString(2)));
+                values.put("series_key", searchKey(cursor.getString(3)));
+                db.update("books", values, "id = ?", new String[]{Long.toString(cursor.getLong(0))});
+            }
+        }
+    }
+
+    private static String searchKey(String value) {
+        if (value == null || value.isEmpty()) return "";
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFC)
+                .toLowerCase(Locale.ROOT)
+                .trim();
+        return normalized.replaceAll("\\s+", " ");
     }
 
     public void beginNativeImport() {
@@ -52,7 +90,7 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
             String[] f = row.split(String.valueOf(FIELD_SEPARATOR), -1);
             if (f.length < 17 || f[2].isEmpty()) continue;
 
-            ContentValues values = new ContentValues(17);
+            ContentValues values = new ContentValues(20);
             values.put("author", f[0]);
             values.put("genre", f[1]);
             values.put("title", f[2]);
@@ -70,6 +108,9 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
             values.put("keywords", f[14]);
             values.put("book_year", f[15]);
             values.put("source_library", f[16]);
+            values.put("author_key", searchKey(f[0]));
+            values.put("title_key", searchKey(f[2]));
+            values.put("series_key", searchKey(f[3]));
             db.insertOrThrow("books", null, values);
         }
     }
@@ -94,23 +135,23 @@ public final class CatalogDatabase extends SQLiteOpenHelper {
     }
 
     public List<BookItem> searchBooks(String query, int limit) {
-        String needle = "%" + query.trim() + "%";
+        String needle = "%" + searchKey(query) + "%";
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books WHERE title LIKE ? COLLATE NOCASE OR author LIKE ? COLLATE NOCASE OR series LIKE ? COLLATE NOCASE " +
+                "FROM books WHERE title_key LIKE ? OR author_key LIKE ? OR series_key LIKE ? " +
                 "ORDER BY title COLLATE NOCASE LIMIT ?";
         return queryBooks(sql, new String[]{needle, needle, needle, Integer.toString(limit)});
     }
 
     public List<BookItem> booksByAuthor(String author, int limit) {
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books WHERE author = ? COLLATE NOCASE ORDER BY title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{author, Integer.toString(limit)});
+                "FROM books WHERE author_key = ? ORDER BY title COLLATE NOCASE LIMIT ?";
+        return queryBooks(sql, new String[]{searchKey(author), Integer.toString(limit)});
     }
 
     public List<BookItem> booksBySeries(String series, int limit) {
         String sql = "SELECT " + BOOK_COLUMNS +
-                "FROM books WHERE series = ? COLLATE NOCASE ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE LIMIT ?";
-        return queryBooks(sql, new String[]{series, Integer.toString(limit)});
+                "FROM books WHERE series_key = ? ORDER BY CAST(series_no AS INTEGER), title COLLATE NOCASE LIMIT ?";
+        return queryBooks(sql, new String[]{searchKey(series), Integer.toString(limit)});
     }
 
     public List<String> listAuthors(int limit) {
