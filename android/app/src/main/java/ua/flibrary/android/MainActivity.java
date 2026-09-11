@@ -23,6 +23,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
@@ -44,6 +46,8 @@ public final class MainActivity extends Activity {
     private LinearLayout results;
     private CatalogDatabase catalogDatabase;
     private BookItem pendingBook;
+    private Button importButton;
+    private final ExecutorService importExecutor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,7 +74,7 @@ public final class MainActivity extends Activity {
         LinearLayout setup = new LinearLayout(this);
         setup.setOrientation(LinearLayout.HORIZONTAL);
 
-        Button importButton = new Button(this);
+        importButton = new Button(this);
         importButton.setText("Import INPX");
         importButton.setOnClickListener(v -> openInpxDocument());
         setup.addView(importButton, new LinearLayout.LayoutParams(
@@ -187,38 +191,54 @@ public final class MainActivity extends Activity {
         } catch (SecurityException ignored) {
         }
 
-        String displayName = queryDisplayName(uri);
-        boolean transactionStarted = false;
-        boolean success = false;
-        try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
-            if (pfd == null) {
-                status.setText("Cannot open selected document");
-                return;
+        startInpxImport(uri, queryDisplayName(uri));
+    }
+
+    private void startInpxImport(Uri uri, String displayName) {
+        importButton.setEnabled(false);
+        status.setText("Importing " + displayName + "…");
+
+        importExecutor.execute(() -> {
+            boolean transactionStarted = false;
+            boolean success = false;
+            String message;
+
+            try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
+                if (pfd == null) {
+                    message = "Cannot open selected document";
+                } else {
+                    catalogDatabase.beginNativeImport();
+                    transactionStarted = true;
+                    String result = nativeImportInpx(pfd.getFd(), catalogDatabase);
+                    success = result != null && result.startsWith("OK:");
+                    message = result == null ? "Native import failed" : result;
+                }
+            } catch (IOException | RuntimeException e) {
+                message = "Import failed: " + e.getMessage();
             }
 
-            status.setText("Importing " + displayName + "…");
-            catalogDatabase.beginNativeImport();
-            transactionStarted = true;
-
-            String result = nativeImportInpx(pfd.getFd(), catalogDatabase);
-            success = result != null && result.startsWith("OK:");
-            status.setText(result == null ? "Native import failed" : result);
-        } catch (IOException | RuntimeException e) {
-            status.setText("Import failed: " + e.getMessage());
-        } finally {
             if (transactionStarted) {
                 try {
                     catalogDatabase.finishNativeImport(success);
                 } catch (RuntimeException e) {
-                    status.setText("Database finalize failed: " + e.getMessage());
+                    message = "Database finalize failed: " + e.getMessage();
                     success = false;
                 }
             }
-            if (success) {
-                updateStatus();
-                showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
-            }
-        }
+
+            final boolean importSucceeded = success;
+            final String finalMessage = message;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                importButton.setEnabled(true);
+                if (importSucceeded) {
+                    updateStatus();
+                    showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
+                } else {
+                    status.setText(finalMessage);
+                }
+            });
+        });
     }
 
     private void runSearch() {
@@ -432,6 +452,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        importExecutor.shutdownNow();
         if (catalogDatabase != null) catalogDatabase.close();
         super.onDestroy();
     }
