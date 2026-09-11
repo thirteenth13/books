@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
@@ -50,6 +51,8 @@ public final class MainActivity extends Activity {
     private Button importButton;
     private boolean namesAreAuthors;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService queryWorker = Executors.newSingleThreadExecutor();
+    private final AtomicLong queryGeneration = new AtomicLong();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -76,9 +79,9 @@ public final class MainActivity extends Activity {
 
         importButton.setOnClickListener(v -> openInpxDocument());
         folderButton.setOnClickListener(v -> chooseLibraryFolder());
-        booksButton.setOnClickListener(v -> showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги"));
-        authorsButton.setOnClickListener(v -> showNameList(catalogDatabase.listAuthors(LIST_LIMIT), true));
-        seriesButton.setOnClickListener(v -> showNameList(catalogDatabase.listSeries(LIST_LIMIT), false));
+        booksButton.setOnClickListener(v -> loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT)));
+        authorsButton.setOnClickListener(v -> loadNames(true));
+        seriesButton.setOnClickListener(v -> loadNames(false));
         searchButton.setOnClickListener(v -> runSearch());
         searchInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
@@ -89,7 +92,7 @@ public final class MainActivity extends Activity {
         });
 
         updateStatus();
-        showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
+        loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
     }
 
     int dp(int value) {
@@ -154,6 +157,7 @@ public final class MainActivity extends Activity {
 
     private void startInpxImport(Uri uri, String displayName) {
         importButton.setEnabled(false);
+        queryGeneration.incrementAndGet();
         status.setText("Імпортую " + displayName + "…");
 
         worker.execute(() -> {
@@ -190,7 +194,7 @@ public final class MainActivity extends Activity {
                 importButton.setEnabled(true);
                 if (importSucceeded) {
                     updateStatus();
-                    showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
+                    loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
                 } else {
                     status.setText(finalMessage);
                     showErrorDialog(finalMessage);
@@ -199,13 +203,50 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private interface BookQuery { List<BookItem> run(); }
+
+    private void loadBooks(String heading, BookQuery query) {
+        long generation = queryGeneration.incrementAndGet();
+        resultsHeading.setText(heading + "  •  …");
+        queryWorker.execute(() -> {
+            try {
+                List<BookItem> books = query.run();
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
+                    showBooks(books, heading);
+                });
+            } catch (RuntimeException e) {
+                postError("Помилка каталогу: " + safeMessage(e));
+            }
+        });
+    }
+
+    private void loadNames(boolean authors) {
+        long generation = queryGeneration.incrementAndGet();
+        String heading = authors ? "Автори" : "Серії";
+        resultsHeading.setText(heading + "  •  …");
+        queryWorker.execute(() -> {
+            try {
+                List<String> names = authors
+                        ? catalogDatabase.listAuthors(LIST_LIMIT)
+                        : catalogDatabase.listSeries(LIST_LIMIT);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
+                    showNameList(names, authors);
+                });
+            } catch (RuntimeException e) {
+                postError("Помилка каталогу: " + safeMessage(e));
+            }
+        });
+    }
+
     private void runSearch() {
         String query = searchInput.getText().toString().trim();
         if (query.isEmpty()) {
-            showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Книги");
+            loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
             return;
         }
-        showBooks(catalogDatabase.searchBooks(query, LIST_LIMIT), "Пошук: " + query);
+        loadBooks("Пошук: " + query, () -> catalogDatabase.searchBooks(query, LIST_LIMIT));
     }
 
     private void showBooks(List<BookItem> books, String heading) {
@@ -223,10 +264,10 @@ public final class MainActivity extends Activity {
 
     private void openName(String display) {
         String name = stripCount(display);
-        List<BookItem> books = namesAreAuthors
+        boolean authors = namesAreAuthors;
+        loadBooks(name, () -> authors
                 ? catalogDatabase.booksByAuthor(name, LIST_LIMIT)
-                : catalogDatabase.booksBySeries(name, LIST_LIMIT);
-        showBooks(books, name);
+                : catalogDatabase.booksBySeries(name, LIST_LIMIT));
     }
 
     private String stripCount(String display) {
@@ -241,11 +282,11 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("Відкрити", (dialog, which) -> openBook(book));
         if (!book.author.isEmpty()) {
             builder.setNeutralButton("Автор", (dialog, which) ->
-                    showBooks(catalogDatabase.booksByAuthor(book.author, LIST_LIMIT), book.author));
+                    loadBooks(book.author, () -> catalogDatabase.booksByAuthor(book.author, LIST_LIMIT)));
         }
         if (!book.series.isEmpty()) {
             builder.setNegativeButton("Серія", (dialog, which) ->
-                    showBooks(catalogDatabase.booksBySeries(book.series, LIST_LIMIT), book.series));
+                    loadBooks(book.series, () -> catalogDatabase.booksBySeries(book.series, LIST_LIMIT)));
         } else {
             builder.setNegativeButton("Закрити", null);
         }
@@ -329,6 +370,7 @@ public final class MainActivity extends Activity {
             showError("У записі каталогу немає даних про архів або файл книги.");
             return;
         }
+
         status.setText("Відкриваю «" + book.title + "»…");
         worker.execute(() -> openBookInBackground(book));
     }
@@ -360,7 +402,9 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 output = new File(booksDir, safeFileName(book.outputFileName()));
-                try (FileOutputStream stream = new FileOutputStream(output, false)) { stream.write(data); }
+                try (FileOutputStream stream = new FileOutputStream(output, false)) {
+                    stream.write(data);
+                }
             }
 
             Uri contentUri = FileProvider.getUriForFile(this, getPackageName() + ".files", output);
@@ -373,7 +417,8 @@ public final class MainActivity extends Activity {
                     startActivity(Intent.createChooser(view, "Відкрити книгу"));
                     updateStatus();
                 } catch (ActivityNotFoundException e) {
-                    showError("Немає застосунку для відкриття ." + book.extension.toLowerCase(Locale.ROOT));
+                    showError("Немає застосунку для відкриття ." +
+                            book.extension.toLowerCase(Locale.ROOT));
                 }
             });
         } catch (IOException | RuntimeException e) {
@@ -382,7 +427,9 @@ public final class MainActivity extends Activity {
     }
 
     private void postError(String message) {
-        runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) showError(message); });
+        runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed()) showError(message);
+        });
     }
 
     private String safeFileName(String value) {
@@ -408,8 +455,11 @@ public final class MainActivity extends Activity {
     }
 
     private void showErrorDialog(String message) {
-        new AlertDialog.Builder(this).setTitle("FLibrary").setMessage(message)
-                .setPositiveButton("OK", null).show();
+        new AlertDialog.Builder(this)
+                .setTitle("FLibrary")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private String safeMessage(Throwable error) {
@@ -433,6 +483,8 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        queryGeneration.incrementAndGet();
+        queryWorker.shutdownNow();
         worker.shutdownNow();
         if (catalogDatabase != null) catalogDatabase.close();
         super.onDestroy();
