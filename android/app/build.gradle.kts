@@ -16,6 +16,18 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++20")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
     }
 
     buildTypes {
