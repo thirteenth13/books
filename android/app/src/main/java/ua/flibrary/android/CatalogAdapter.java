@@ -62,13 +62,13 @@ final class CatalogAdapter extends RecyclerView.Adapter<CatalogAdapter.RowHolder
         h.title.setText(emptyText);h.title.setTextSize(15);h.title.setTextColor(activity.getColor(R.color.text_secondary));h.itemView.setBackground(null);
     }
 
-    private static String humanizeAuthor(String value){
+    static String humanizeAuthor(String value){
         String v=value.trim();
         while(v.endsWith(":")||v.endsWith(";"))v=v.substring(0,v.length()-1).trim();
         v=v.replace(',', ' ').replaceAll("\\s+"," ");
         return v;
     }
-    private static String humanizeGenre(String value){return value.replace(':',' · ').replace('_',' ').trim();}
+    private static String humanizeGenre(String value){return value.replace(":"," · ").replace('_',' ').trim();}
     private static String humanizeNameRow(String value){int marker=value.lastIndexOf(" (");String name=marker>0&&value.endsWith(")")?value.substring(0,marker):value;String count=marker>0&&value.endsWith(")")?value.substring(marker):"";return humanizeAuthor(name)+count;}
 
     static final class RowHolder extends RecyclerView.ViewHolder{final TextView title,author,series,badges;RowHolder(@NonNull View itemView,TextView title,TextView author,TextView series,TextView badges){super(itemView);this.title=title;this.author=author;this.series=series;this.badges=badges;}}
