@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
     private static final int OPEN_LIBRARY_FOLDER_REQUEST = 1002;
-    private static final int LIST_LIMIT = 100;
+    private static final int PAGE_SIZE = 100;
     private static final String PREFS = "flibrary";
     private static final String PREF_LIBRARY_TREE = "library_tree";
 
@@ -50,9 +50,17 @@ public final class MainActivity extends Activity {
     private BookItem pendingBook;
     private Button importButton;
     private boolean namesAreAuthors;
+    private boolean pageLoading;
+    private boolean hasMorePages;
+    private String pageHeading = "Книги";
+    private BookPageSource bookPageSource;
+    private NamePageSource namePageSource;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService queryWorker = Executors.newSingleThreadExecutor();
     private final AtomicLong queryGeneration = new AtomicLong();
+
+    private interface BookPageSource { List<BookItem> load(int limit, int offset); }
+    private interface NamePageSource { List<String> load(int limit, int offset); }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,9 +75,19 @@ public final class MainActivity extends Activity {
         importButton = findViewById(R.id.import_button);
 
         catalogAdapter = new CatalogAdapter(this, this::showBookDetails, this::openName);
-        resultsList.setLayoutManager(new LinearLayoutManager(this));
+        LinearLayoutManager layoutManager = new LinearLayoutManager(this);
+        resultsList.setLayoutManager(layoutManager);
         resultsList.setHasFixedSize(false);
         resultsList.setAdapter(catalogAdapter);
+        resultsList.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                if (dy <= 0 || pageLoading || !hasMorePages) return;
+                int total = layoutManager.getItemCount();
+                int last = layoutManager.findLastVisibleItemPosition();
+                if (total > 0 && last >= total - 12) loadNextPage();
+            }
+        });
 
         Button folderButton = findViewById(R.id.folder_button);
         Button booksButton = findViewById(R.id.books_button);
@@ -79,9 +97,9 @@ public final class MainActivity extends Activity {
 
         importButton.setOnClickListener(v -> openInpxDocument());
         folderButton.setOnClickListener(v -> chooseLibraryFolder());
-        booksButton.setOnClickListener(v -> loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT)));
-        authorsButton.setOnClickListener(v -> loadNames(true));
-        seriesButton.setOnClickListener(v -> loadNames(false));
+        booksButton.setOnClickListener(v -> startBookPaging("Книги", catalogDatabase::listBooks));
+        authorsButton.setOnClickListener(v -> startNamePaging(true));
+        seriesButton.setOnClickListener(v -> startNamePaging(false));
         searchButton.setOnClickListener(v -> runSearch());
         searchInput.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
@@ -92,7 +110,7 @@ public final class MainActivity extends Activity {
         });
 
         updateStatus();
-        loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
+        startBookPaging("Книги", catalogDatabase::listBooks);
     }
 
     int dp(int value) {
@@ -194,7 +212,7 @@ public final class MainActivity extends Activity {
                 importButton.setEnabled(true);
                 if (importSucceeded) {
                     updateStatus();
-                    loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
+                    startBookPaging("Книги", catalogDatabase::listBooks);
                 } else {
                     status.setText(finalMessage);
                     showErrorDialog(finalMessage);
@@ -203,71 +221,122 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private interface BookQuery { List<BookItem> run(); }
-
-    private void loadBooks(String heading, BookQuery query) {
+    private void startBookPaging(String heading, BookPageSource source) {
         long generation = queryGeneration.incrementAndGet();
+        pageHeading = heading;
+        bookPageSource = source;
+        namePageSource = null;
+        pageLoading = true;
+        hasMorePages = false;
         resultsHeading.setText(heading + "  •  …");
+
         queryWorker.execute(() -> {
             try {
-                List<BookItem> books = query.run();
+                List<BookItem> page = source.load(PAGE_SIZE, 0);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
-                    showBooks(books, heading);
+                    catalogAdapter.showBooks(page);
+                    resultsHeading.setText(heading + "  •  " + page.size());
+                    resultsList.scrollToPosition(0);
+                    pageLoading = false;
+                    hasMorePages = page.size() == PAGE_SIZE;
                 });
             } catch (RuntimeException e) {
-                postError("Помилка каталогу: " + safeMessage(e));
+                postCatalogError(generation, e);
             }
         });
     }
 
-    private void loadNames(boolean authors) {
+    private void startNamePaging(boolean authors) {
         long generation = queryGeneration.incrementAndGet();
-        String heading = authors ? "Автори" : "Серії";
-        resultsHeading.setText(heading + "  •  …");
+        namesAreAuthors = authors;
+        pageHeading = authors ? "Автори" : "Серії";
+        bookPageSource = null;
+        namePageSource = authors ? catalogDatabase::listAuthors : catalogDatabase::listSeries;
+        pageLoading = true;
+        hasMorePages = false;
+        resultsHeading.setText(pageHeading + "  •  …");
+        NamePageSource source = namePageSource;
+
         queryWorker.execute(() -> {
             try {
-                List<String> names = authors
-                        ? catalogDatabase.listAuthors(LIST_LIMIT)
-                        : catalogDatabase.listSeries(LIST_LIMIT);
+                List<String> page = source.load(PAGE_SIZE, 0);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
-                    showNameList(names, authors);
+                    catalogAdapter.showNames(page, authors ? "Авторів не знайдено" : "Серій не знайдено");
+                    resultsHeading.setText(pageHeading + "  •  " + page.size());
+                    resultsList.scrollToPosition(0);
+                    pageLoading = false;
+                    hasMorePages = page.size() == PAGE_SIZE;
                 });
             } catch (RuntimeException e) {
-                postError("Помилка каталогу: " + safeMessage(e));
+                postCatalogError(generation, e);
             }
+        });
+    }
+
+    private void loadNextPage() {
+        if (pageLoading || !hasMorePages) return;
+        final long generation = queryGeneration.get();
+        final int offset = catalogAdapter.dataSize();
+        final BookPageSource books = bookPageSource;
+        final NamePageSource names = namePageSource;
+        if (books == null && names == null) return;
+
+        pageLoading = true;
+        queryWorker.execute(() -> {
+            try {
+                if (books != null) {
+                    List<BookItem> page = books.load(PAGE_SIZE, offset);
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
+                        catalogAdapter.appendBooks(page);
+                        pageLoading = false;
+                        hasMorePages = page.size() == PAGE_SIZE;
+                        resultsHeading.setText(pageHeading + "  •  " + catalogAdapter.dataSize());
+                    });
+                } else {
+                    List<String> page = names.load(PAGE_SIZE, offset);
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
+                        catalogAdapter.appendNames(page);
+                        pageLoading = false;
+                        hasMorePages = page.size() == PAGE_SIZE;
+                        resultsHeading.setText(pageHeading + "  •  " + catalogAdapter.dataSize());
+                    });
+                }
+            } catch (RuntimeException e) {
+                postCatalogError(generation, e);
+            }
+        });
+    }
+
+    private void postCatalogError(long generation, RuntimeException e) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed() || generation != queryGeneration.get()) return;
+            pageLoading = false;
+            hasMorePages = false;
+            showError("Помилка каталогу: " + safeMessage(e));
         });
     }
 
     private void runSearch() {
         String query = searchInput.getText().toString().trim();
         if (query.isEmpty()) {
-            loadBooks("Книги", () -> catalogDatabase.listBooks(LIST_LIMIT));
+            startBookPaging("Книги", catalogDatabase::listBooks);
             return;
         }
-        loadBooks("Пошук: " + query, () -> catalogDatabase.searchBooks(query, LIST_LIMIT));
-    }
-
-    private void showBooks(List<BookItem> books, String heading) {
-        resultsHeading.setText(heading + "  •  " + books.size());
-        catalogAdapter.showBooks(books);
-        resultsList.scrollToPosition(0);
-    }
-
-    private void showNameList(List<String> names, boolean authors) {
-        namesAreAuthors = authors;
-        resultsHeading.setText((authors ? "Автори" : "Серії") + "  •  " + names.size());
-        catalogAdapter.showNames(names, authors ? "Авторів не знайдено" : "Серій не знайдено");
-        resultsList.scrollToPosition(0);
+        startBookPaging("Пошук: " + query,
+                (limit, offset) -> catalogDatabase.searchBooks(query, limit, offset));
     }
 
     private void openName(String display) {
         String name = stripCount(display);
-        boolean authors = namesAreAuthors;
-        loadBooks(name, () -> authors
-                ? catalogDatabase.booksByAuthor(name, LIST_LIMIT)
-                : catalogDatabase.booksBySeries(name, LIST_LIMIT));
+        if (namesAreAuthors) {
+            startBookPaging(name, (limit, offset) -> catalogDatabase.booksByAuthor(name, limit, offset));
+        } else {
+            startBookPaging(name, (limit, offset) -> catalogDatabase.booksBySeries(name, limit, offset));
+        }
     }
 
     private String stripCount(String display) {
@@ -282,11 +351,13 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("Відкрити", (dialog, which) -> openBook(book));
         if (!book.author.isEmpty()) {
             builder.setNeutralButton("Автор", (dialog, which) ->
-                    loadBooks(book.author, () -> catalogDatabase.booksByAuthor(book.author, LIST_LIMIT)));
+                    startBookPaging(book.author,
+                            (limit, offset) -> catalogDatabase.booksByAuthor(book.author, limit, offset)));
         }
         if (!book.series.isEmpty()) {
             builder.setNegativeButton("Серія", (dialog, which) ->
-                    loadBooks(book.series, () -> catalogDatabase.booksBySeries(book.series, LIST_LIMIT)));
+                    startBookPaging(book.series,
+                            (limit, offset) -> catalogDatabase.booksBySeries(book.series, limit, offset)));
         } else {
             builder.setNegativeButton("Закрити", null);
         }
