@@ -1,6 +1,7 @@
 package ua.flibrary.android;
 
 import android.app.Activity;
+import android.app.ActivityNotFoundException;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.database.Cursor;
@@ -9,19 +10,26 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+import androidx.documentfile.provider.DocumentFile;
+
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int OPEN_INPX_REQUEST = 1001;
+    private static final int OPEN_LIBRARY_FOLDER_REQUEST = 1002;
     private static final int LIST_LIMIT = 100;
+    private static final String PREFS = "flibrary";
+    private static final String PREF_LIBRARY_TREE = "library_tree";
 
     static {
         System.loadLibrary("flibrary_android");
@@ -29,11 +37,13 @@ public final class MainActivity extends Activity {
 
     private native String nativeStatus();
     private native String nativeImportInpx(int fd, CatalogDatabase database);
+    private native byte[] nativeExtractBook(int fd, String fileName, String extension);
 
     private TextView status;
     private EditText searchInput;
     private LinearLayout results;
     private CatalogDatabase catalogDatabase;
+    private BookItem pendingBook;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,15 +62,26 @@ public final class MainActivity extends Activity {
         content.addView(title);
 
         status = new TextView(this);
-        status.setText("Books: " + catalogDatabase.getBookCount());
+        updateStatus();
         status.setTextSize(14);
         status.setPadding(0, dp(8), 0, dp(8));
         content.addView(status);
 
+        LinearLayout setup = new LinearLayout(this);
+        setup.setOrientation(LinearLayout.HORIZONTAL);
+
         Button importButton = new Button(this);
         importButton.setText("Import INPX");
         importButton.setOnClickListener(v -> openInpxDocument());
-        content.addView(importButton);
+        setup.addView(importButton, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        Button folderButton = new Button(this);
+        folderButton.setText("Library folder");
+        folderButton.setOnClickListener(v -> chooseLibraryFolder());
+        setup.addView(folderButton, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        content.addView(setup);
 
         LinearLayout navigation = new LinearLayout(this);
         navigation.setOrientation(LinearLayout.HORIZONTAL);
@@ -108,6 +129,11 @@ public final class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density);
     }
 
+    private void updateStatus() {
+        status.setText("Books: " + catalogDatabase.getBookCount() +
+                " • Library folder: " + (getLibraryTreeUri() == null ? "not selected" : "ready"));
+    }
+
     private void openInpxDocument() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -115,11 +141,39 @@ public final class MainActivity extends Activity {
         startActivityForResult(intent, OPEN_INPX_REQUEST);
     }
 
+    private void chooseLibraryFolder() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        startActivityForResult(intent, OPEN_LIBRARY_FOLDER_REQUEST);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != OPEN_INPX_REQUEST || resultCode != RESULT_OK || data == null) return;
+        if (resultCode != RESULT_OK || data == null) return;
 
+        if (requestCode == OPEN_LIBRARY_FOLDER_REQUEST) {
+            Uri tree = data.getData();
+            if (tree == null) return;
+            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            try {
+                getContentResolver().takePersistableUriPermission(tree, flags);
+            } catch (SecurityException ignored) {
+            }
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(PREF_LIBRARY_TREE, tree.toString()).apply();
+            updateStatus();
+            if (pendingBook != null) {
+                BookItem book = pendingBook;
+                pendingBook = null;
+                openBook(book);
+            }
+            return;
+        }
+
+        if (requestCode != OPEN_INPX_REQUEST) return;
         Uri uri = data.getData();
         if (uri == null) {
             status.setText("No document selected");
@@ -161,7 +215,7 @@ public final class MainActivity extends Activity {
                 }
             }
             if (success) {
-                status.setText("Imported. Books: " + catalogDatabase.getBookCount());
+                updateStatus();
                 showBooks(catalogDatabase.listBooks(LIST_LIMIT), "Books");
             }
         }
@@ -239,7 +293,7 @@ public final class MainActivity extends Activity {
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(book.title)
                 .setMessage(book.details())
-                .setPositiveButton("Close", null);
+                .setPositiveButton("Open", (dialog, which) -> openBook(book));
         if (!book.author.isEmpty()) {
             builder.setNeutralButton("Author", (dialog, which) ->
                     showBooks(catalogDatabase.booksByAuthor(book.author, LIST_LIMIT), book.author));
@@ -247,8 +301,118 @@ public final class MainActivity extends Activity {
         if (!book.series.isEmpty()) {
             builder.setNegativeButton("Series", (dialog, which) ->
                     showBooks(catalogDatabase.booksBySeries(book.series, LIST_LIMIT), book.series));
+        } else {
+            builder.setNegativeButton("Close", null);
         }
         builder.show();
+    }
+
+    private Uri getLibraryTreeUri() {
+        String value = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(PREF_LIBRARY_TREE, null);
+        return value == null ? null : Uri.parse(value);
+    }
+
+    private DocumentFile findArchive(BookItem book) {
+        Uri treeUri = getLibraryTreeUri();
+        if (treeUri == null || book.folder.isEmpty()) return null;
+        DocumentFile current = DocumentFile.fromTreeUri(this, treeUri);
+        if (current == null) return null;
+
+        String path = book.folder.replace('\\', '/');
+        while (path.startsWith("/")) path = path.substring(1);
+        String[] parts = path.split("/");
+        for (int i = 0; i < parts.length; ++i) {
+            String part = parts[i];
+            if (part.isEmpty() || ".".equals(part)) continue;
+            DocumentFile next = current.findFile(part);
+            if (next == null && i == parts.length - 1 && !part.toLowerCase().endsWith(".zip")) {
+                next = current.findFile(part + ".zip");
+            }
+            if (next == null) return null;
+            current = next;
+        }
+        return current != null && current.isFile() ? current : null;
+    }
+
+    private void openBook(BookItem book) {
+        if (getLibraryTreeUri() == null) {
+            pendingBook = book;
+            chooseLibraryFolder();
+            return;
+        }
+        if (book.folder.isEmpty() || book.fileName.isEmpty()) {
+            showError("Catalog record does not contain archive/file information.");
+            return;
+        }
+
+        DocumentFile archive = findArchive(book);
+        if (archive == null) {
+            showError("Archive not found: " + book.folder +
+                    "\nSelect the folder that contains the FLibrary archives.");
+            return;
+        }
+
+        status.setText("Opening " + book.title + "…");
+        try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(archive.getUri(), "r")) {
+            if (pfd == null) {
+                showError("Cannot open archive: " + book.folder);
+                return;
+            }
+            byte[] data = nativeExtractBook(pfd.getFd(), book.fileName, book.extension);
+            if (data == null || data.length == 0) {
+                showError("Book file was not found in archive: " + book.fileName);
+                return;
+            }
+
+            File booksDir = new File(getCacheDir(), "books");
+            if (!booksDir.exists() && !booksDir.mkdirs()) {
+                showError("Cannot create book cache folder.");
+                return;
+            }
+            File output = new File(booksDir, safeFileName(book.outputFileName()));
+            try (FileOutputStream stream = new FileOutputStream(output, false)) {
+                stream.write(data);
+            }
+
+            Uri contentUri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".files", output);
+            Intent view = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(contentUri, mimeType(book.extension))
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(view, "Open book"));
+            updateStatus();
+        } catch (ActivityNotFoundException e) {
+            showError("No application is installed that can open " + book.extension.toUpperCase() + " files.");
+        } catch (IOException | RuntimeException e) {
+            showError("Open failed: " + e.getMessage());
+        }
+    }
+
+    private String safeFileName(String value) {
+        String safe = value.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+        return safe.isEmpty() ? "book.bin" : safe;
+    }
+
+    private String mimeType(String extension) {
+        String ext = extension == null ? "" : extension.toLowerCase();
+        switch (ext) {
+            case "epub": return "application/epub+zip";
+            case "fb2": return "application/x-fictionbook+xml";
+            case "pdf": return "application/pdf";
+            case "txt": return "text/plain";
+            case "mobi": return "application/x-mobipocket-ebook";
+            default: return "application/octet-stream";
+        }
+    }
+
+    private void showError(String message) {
+        status.setText(message);
+        new AlertDialog.Builder(this)
+                .setTitle("FLibrary")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private String queryDisplayName(Uri uri) {
