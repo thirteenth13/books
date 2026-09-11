@@ -92,41 +92,55 @@
             android:textAllCaps="false" />
     </LinearLayout>
 
-    <LinearLayout
+    <RadioGroup
+        android:id="@+id/catalog_tabs"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="9dp"
         android:orientation="horizontal"
         android:background="@drawable/bg_panel"
-        android:padding="4dp">
+        android:padding="4dp"
+        android:checkedButton="@id/books_button">
 
-        <Button
+        <RadioButton
             android:id="@+id/books_button"
             android:layout_width="0dp"
             android:layout_height="42dp"
             android:layout_weight="1"
+            android:button="@null"
+            android:background="@drawable/bg_nav_segment"
+            android:gravity="center"
             android:minWidth="0dp"
             android:text="Книги"
-            android:textAllCaps="false" />
+            android:textColor="@color/nav_segment_text"
+            android:textStyle="bold" />
 
-        <Button
+        <RadioButton
             android:id="@+id/authors_button"
             android:layout_width="0dp"
             android:layout_height="42dp"
             android:layout_weight="1"
+            android:button="@null"
+            android:background="@drawable/bg_nav_segment"
+            android:gravity="center"
             android:minWidth="0dp"
             android:text="Автори"
-            android:textAllCaps="false" />
+            android:textColor="@color/nav_segment_text"
+            android:textStyle="bold" />
 
-        <Button
+        <RadioButton
             android:id="@+id/series_button"
             android:layout_width="0dp"
             android:layout_height="42dp"
             android:layout_weight="1"
+            android:button="@null"
+            android:background="@drawable/bg_nav_segment"
+            android:gravity="center"
             android:minWidth="0dp"
             android:text="Серії"
-            android:textAllCaps="false" />
-    </LinearLayout>
+            android:textColor="@color/nav_segment_text"
+            android:textStyle="bold" />
+    </RadioGroup>
 
     <TextView
         android:id="@+id/results_heading"
